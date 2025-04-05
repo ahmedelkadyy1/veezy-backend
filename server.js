@@ -1,3 +1,29 @@
+// Add this at the top of server.js
+const path = require('path');
+const fs = require('fs');
+
+// Store viewed IPs (in production, use a database instead)
+const viewedIPs = {};
+
+// Middleware to check IP
+app.post('/videos/:id/view', (req, res) => {
+  const videoId = req.params.id;
+  const clientIP = req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
+
+  if (!videos[videoId]) {
+    videos[videoId] = { views: 0, uploadTime: new Date().toISOString() };
+  }
+
+  // Check if IP already viewed
+  if (!viewedIPs[videoId]) viewedIPs[videoId] = new Set();
+  if (!viewedIPs[videoId].has(clientIP)) {
+    videos[videoId].views++;
+    viewedIPs[videoId].add(clientIP);
+    fs.writeFileSync('viewedIPs.json', JSON.stringify(viewedIPs)); // Persist data
+  }
+
+  res.json({ views: videos[videoId].views });
+});
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
