@@ -1,73 +1,137 @@
+require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 
 const app = express();
-app.use(cors());
-app.use(bodyParser.json());
 
-// Database setup
-const videos = {
-    1: { views: 142, uploadTime: '2023-05-15T10:00:00Z' },
-    2: { views: 87, uploadTime: '2023-06-20T14:30:00Z' },
-};
+// Enhanced security middleware
+app.use(helmet());
+app.use(cors({
+    origin: [
+        'https://veezy-frontend.vercel.app',
+        'http://localhost:3000' // For local testing
+    ],
+    methods: ['GET', 'POST', 'DELETE'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
+app.use(bodyParser.json({ limit: '10kb' }));
 
-// IP tracking for view protection
-const viewedIPs = {};
+// Rate limiting for API endpoints
+const apiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 100, // Limit each IP to 100 requests per windowMs
+    message: 'Too many requests from this IP, please try again later'
+});
 
-// Load persisted IP data if exists
-if (fs.existsSync('viewedIPs.json')) {
-    const data = fs.readFileSync('viewedIPs.json', 'utf8');
-    Object.assign(viewedIPs, JSON.parse(data));
+// Database setup with persistence
+const DATA_FILE = path.join(__dirname, 'data.json');
+let videos = {};
+let viewedIPs = {};
+
+// Load initial data
+function loadData() {
+    try {
+        if (fs.existsSync(DATA_FILE)) {
+            const data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+            videos = data.videos || {};
+            viewedIPs = data.viewedIPs || {};
+        } else {
+            // Initialize with sample data if no file exists
+            videos = {
+                1: { views: 142, uploadTime: '2023-05-15T10:00:00Z' },
+                2: { views: 87, uploadTime: '2023-06-20T14:30:00Z' }
+            };
+            saveData();
+        }
+    } catch (err) {
+        console.error('Error loading data:', err);
+        // Fallback to empty data if loading fails
+        videos = {};
+        viewedIPs = {};
+    }
 }
 
-// Authentication middleware
+// Save data to file
+function saveData() {
+    const data = { videos, viewedIPs };
+    fs.writeFileSync(DATA_FILE, JSON.stringify(data), 'utf8');
+}
+
+// Authentication
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '227001';
 
 const authenticateAdmin = (req, res, next) => {
-    const authToken = req.headers['authorization'];
+    const authHeader = req.headers['authorization'];
     
-    if (authToken !== `Bearer ${ADMIN_TOKEN}`) {
-        return res.status(403).json({ error: 'Unauthorized' });
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return res.status(401).json({ error: 'Authorization header missing or invalid' });
+    }
+    
+    const token = authHeader.split(' ')[1];
+    if (token !== ADMIN_TOKEN) {
+        return res.status(403).json({ error: 'Invalid admin token' });
     }
     
     next();
 };
 
+// Health check endpoint (add this near the top of your routes)
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'healthy', 
+    timestamp: new Date().toISOString(),
+    videoCount: Object.keys(videos).length 
+  });
+});
+
 // API Endpoint: Get video data
-app.get('/videos/:id', (req, res) => {
+app.get('/videos/:id', apiLimiter, (req, res) => {
     const videoId = req.params.id;
+    
+    if (!videoId) {
+        return res.status(400).json({ error: 'Video ID is required' });
+    }
+    
     const videoData = videos[videoId] || { 
         views: 0, 
         uploadTime: new Date().toISOString() 
     };
+    
     res.json(videoData);
 });
 
 // API Endpoint: Protected view increment
-app.post('/videos/:id/view', (req, res) => {
+app.post('/videos/:id/view', apiLimiter, (req, res) => {
     const videoId = req.params.id;
     const clientIP = req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
 
+    if (!videoId) {
+        return res.status(400).json({ error: 'Video ID is required' });
+    }
+
+    // Initialize video if doesn't exist
     if (!videos[videoId]) {
         videos[videoId] = { 
             views: 0, 
             uploadTime: new Date().toISOString() 
         };
-    } else if (!videos[videoId].uploadTime) {
-        videos[videoId].uploadTime = new Date().toISOString();
     }
 
     // Initialize IP tracking for this video
-    if (!viewedIPs[videoId]) viewedIPs[videoId] = new Set();
+    if (!viewedIPs[videoId]) {
+        viewedIPs[videoId] = new Set();
+    }
     
     // Only increment if IP hasn't viewed before
     if (!viewedIPs[videoId].has(clientIP)) {
         videos[videoId].views++;
         viewedIPs[videoId].add(clientIP);
-        fs.writeFileSync('viewedIPs.json', JSON.stringify(viewedIPs));
+        saveData();
     }
 
     res.json({ 
@@ -76,13 +140,17 @@ app.post('/videos/:id/view', (req, res) => {
     });
 });
 
+// ================= ADMIN ENDPOINTS ================= //
+
 // Admin Endpoint: Set upload time for a single video
 app.post('/admin/videos/:id/set-upload-time', authenticateAdmin, (req, res) => {
     const videoId = req.params.id;
     const { newTime } = req.body;
-    const allowFutureDates = false; // Change to true if you want to allow future dates
     
-    // Validate the timestamp format
+    if (!videoId) {
+        return res.status(400).json({ error: 'Video ID is required' });
+    }
+    
     if (!newTime || isNaN(new Date(newTime).getTime())) {
         return res.status(400).json({ error: 'Invalid timestamp format. Use ISO format (e.g., "2023-10-01T12:00:00Z")' });
     }
@@ -90,7 +158,7 @@ app.post('/admin/videos/:id/set-upload-time', authenticateAdmin, (req, res) => {
     const newTimeDate = new Date(newTime);
     const now = new Date();
     
-    if (!allowFutureDates && newTimeDate > now) {
+    if (newTimeDate > now) {
         return res.status(400).json({ error: 'Upload time cannot be in the future' });
     }
 
@@ -99,13 +167,14 @@ app.post('/admin/videos/:id/set-upload-time', authenticateAdmin, (req, res) => {
     }
     
     videos[videoId].uploadTime = newTime;
+    saveData();
+    
     res.json({ success: true, newUploadTime: newTime });
 });
 
 // Admin Endpoint: Bulk update upload times
 app.post('/admin/videos/bulk-update-times', authenticateAdmin, (req, res) => {
     const updates = req.body.updates;
-    const allowFutureDates = false;
     const now = new Date();
     
     if (!Array.isArray(updates)) {
@@ -113,15 +182,16 @@ app.post('/admin/videos/bulk-update-times', authenticateAdmin, (req, res) => {
     }
     
     const results = [];
+    const errors = [];
     
     updates.forEach(update => {
         if (!update.id || !update.newTime || isNaN(new Date(update.newTime).getTime())) {
-            results.push({ id: update.id, status: 'invalid', error: 'Missing ID or invalid timestamp' });
+            errors.push(`Invalid update for ID: ${update.id}`);
             return;
         }
         
-        if (!allowFutureDates && new Date(update.newTime) > now) {
-            results.push({ id: update.id, status: 'rejected', error: 'Future dates not allowed' });
+        if (new Date(update.newTime) > now) {
+            errors.push(`Future date not allowed for ID: ${update.id}`);
             return;
         }
         
@@ -133,7 +203,15 @@ app.post('/admin/videos/bulk-update-times', authenticateAdmin, (req, res) => {
         results.push({ id: update.id, status: 'updated', newTime: update.newTime });
     });
     
-    res.json({ success: true, results });
+    saveData();
+    
+    res.json({ 
+        success: errors.length === 0,
+        updatedCount: results.length,
+        errorCount: errors.length,
+        results,
+        errors: errors.length > 0 ? errors : undefined
+    });
 });
 
 // Admin Endpoint: Get all videos
@@ -146,7 +224,11 @@ app.post('/admin/videos/:id/set-views', authenticateAdmin, (req, res) => {
     const videoId = req.params.id;
     const { views } = req.body;
     
-    if (views === undefined || isNaN(parseInt(views))) {
+    if (!videoId) {
+        return res.status(400).json({ error: 'Video ID is required' });
+    }
+    
+    if (views === undefined || isNaN(parseInt(views)) || parseInt(views) < 0) {
         return res.status(400).json({ error: 'Invalid view count' });
     }
     
@@ -155,22 +237,71 @@ app.post('/admin/videos/:id/set-views', authenticateAdmin, (req, res) => {
     }
     
     videos[videoId].views = parseInt(views);
+    saveData();
+    
     res.json({ success: true, newViewCount: videos[videoId].views });
 });
 
 // Admin Endpoint: Delete a video
 app.delete('/admin/videos/:id', authenticateAdmin, (req, res) => {
     const videoId = req.params.id;
+    
+    if (!videoId) {
+        return res.status(400).json({ error: 'Video ID is required' });
+    }
+    
     if (!videos[videoId]) {
         return res.status(404).json({ error: 'Video not found' });
     }
+    
     delete videos[videoId];
+    
+    if (viewedIPs[videoId]) {
+        delete viewedIPs[videoId];
+    }
+    
+    saveData();
+    
     res.json({ success: true, message: `Video ${videoId} deleted` });
 });
 
-// Start the server
+// Serve admin panel (optional)
+app.get('/admin', (req, res) => {
+    res.sendFile(path.join(__dirname, 'admin.html'));
+});
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+    console.error(err.stack);
+    res.status(500).json({ error: 'Something went wrong!' });
+});
+
+// 404 handler
+app.use((req, res) => {
+    res.status(404).json({ error: 'Endpoint not found' });
+});
+
+// Initialize data and start server
+loadData();
+
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-    console.log(`Admin token: ${ADMIN_TOKEN}`);
+    console.log(`Server running on port ${PORT}`);
+    console.log(`Admin panel: http://localhost:${PORT}/admin`);
+    if (process.env.NODE_ENV !== 'production') {
+        console.log(`Admin token: ${ADMIN_TOKEN}`);
+    }
+});
+
+// Handle shutdown gracefully
+process.on('SIGINT', () => {
+    console.log('Saving data before shutdown...');
+    saveData();
+    process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+    console.log('Saving data before shutdown...');
+    saveData();
+    process.exit(0);
 });
