@@ -6,7 +6,6 @@ const path = require('path');
 const fs = require('fs');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
-
 const app = express();
 
 // Enhanced security middleware
