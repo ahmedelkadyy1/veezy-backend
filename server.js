@@ -14,52 +14,83 @@ app.use(helmet());
 app.use(cors({
     origin: [
         'https://veezy-frontend.vercel.app',
-        'http://localhost:3000' // For local testing
+        'http://localhost:3000'
     ],
     methods: ['GET', 'POST', 'DELETE'],
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
 app.use(bodyParser.json({ limit: '10kb' }));
 
-// Rate limiting for API endpoints
+// Rate limiting
 const apiLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 100, // Limit each IP to 100 requests per windowMs
+    windowMs: 15 * 60 * 1000,
+    max: 100,
     message: 'Too many requests from this IP, please try again later'
 });
 
-// Database setup with persistence
+// Database setup
 const DATA_FILE = path.join(__dirname, 'data.json');
 let videos = {};
 let viewedIPs = {};
 
-// Load initial data
+// Improved data loading with defaults
 function loadData() {
     try {
         if (fs.existsSync(DATA_FILE)) {
             const data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
             videos = data.videos || {};
             viewedIPs = data.viewedIPs || {};
+            
+            // Initialize default videos if they don't exist
+            if (!videos[1]) {
+                videos[1] = { 
+                    views: 0, 
+                    uploadTime: new Date().toISOString(),
+                    title: "Blanx an E-commerce Website"
+                };
+            }
+            if (!videos[2]) {
+                videos[2] = { 
+                    views: 0, 
+                    uploadTime: new Date().toISOString(),
+                    title: "WatchNest a Movie Website"
+                };
+            }
         } else {
-            // Initialize with sample data if no file exists
+            // Initialize with default data
             videos = {
-                1: { views: 142, uploadTime: '2023-05-15T10:00:00Z' },
-                2: { views: 87, uploadTime: '2023-06-20T14:30:00Z' }
+                1: { 
+                    views: 0, 
+                    uploadTime: new Date().toISOString(),
+                    title: "Blanx an E-commerce Website"
+                },
+                2: { 
+                    views: 0, 
+                    uploadTime: new Date().toISOString(),
+                    title: "WatchNest a Movie Website"
+                }
             };
+            viewedIPs = {};
             saveData();
         }
     } catch (err) {
         console.error('Error loading data:', err);
-        // Fallback to empty data if loading fails
-        videos = {};
+        videos = {
+            1: { views: 0, uploadTime: new Date().toISOString() },
+            2: { views: 0, uploadTime: new Date().toISOString() }
+        };
         viewedIPs = {};
     }
 }
 
-// Save data to file
+// Enhanced save function with error handling
 function saveData() {
-    const data = { videos, viewedIPs };
-    fs.writeFileSync(DATA_FILE, JSON.stringify(data), 'utf8');
+    try {
+        const data = { videos, viewedIPs };
+        fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2), 'utf8');
+    } catch (err) {
+        console.error('Error saving data:', err);
+    }
 }
 
 // Authentication
@@ -80,54 +111,52 @@ const authenticateAdmin = (req, res, next) => {
     next();
 };
 
-// Health check endpoint (add this near the top of your routes)
+// ================= API ENDPOINTS ================= //
+
+// Health check endpoint
 app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'healthy', 
-    timestamp: new Date().toISOString(),
-    videoCount: Object.keys(videos).length 
-  });
+    res.json({ 
+        status: 'healthy', 
+        timestamp: new Date().toISOString(),
+        videoCount: Object.keys(videos).length 
+    });
 });
 
-// API Endpoint: Get video data
+// Get all videos
+app.get('/videos', (req, res) => {
+    res.set('Cache-Control', 'no-store, max-age=0');
+    res.json(videos);
+});
+
+// Get single video
 app.get('/videos/:id', apiLimiter, (req, res) => {
     const videoId = req.params.id;
+    res.set('Cache-Control', 'no-store, max-age=0');
     
-    if (!videoId) {
-        return res.status(400).json({ error: 'Video ID is required' });
+    if (!videos[videoId]) {
+        return res.status(404).json({ error: 'Video not found' });
     }
     
-    const videoData = videos[videoId] || { 
-        views: 0, 
-        uploadTime: new Date().toISOString() 
-    };
-    
-    res.json(videoData);
+    res.json(videos[videoId]);
 });
 
-// API Endpoint: Protected view increment
+// Increment views
 app.post('/videos/:id/view', apiLimiter, (req, res) => {
     const videoId = req.params.id;
     const clientIP = req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
 
-    if (!videoId) {
-        return res.status(400).json({ error: 'Video ID is required' });
-    }
-
-    // Initialize video if doesn't exist
     if (!videos[videoId]) {
         videos[videoId] = { 
             views: 0, 
-            uploadTime: new Date().toISOString() 
+            uploadTime: new Date().toISOString(),
+            title: `Video ${videoId}`
         };
     }
 
-    // Initialize IP tracking for this video
     if (!viewedIPs[videoId]) {
         viewedIPs[videoId] = new Set();
     }
     
-    // Only increment if IP hasn't viewed before
     if (!viewedIPs[videoId].has(clientIP)) {
         videos[videoId].views++;
         viewedIPs[videoId].add(clientIP);
@@ -142,17 +171,18 @@ app.post('/videos/:id/view', apiLimiter, (req, res) => {
 
 // ================= ADMIN ENDPOINTS ================= //
 
-// Admin Endpoint: Set upload time for a single video
+// Get all videos (admin)
+app.get('/admin/videos', authenticateAdmin, (req, res) => {
+    res.json(videos);
+});
+
+// Set upload time
 app.post('/admin/videos/:id/set-upload-time', authenticateAdmin, (req, res) => {
     const videoId = req.params.id;
     const { newTime } = req.body;
     
-    if (!videoId) {
-        return res.status(400).json({ error: 'Video ID is required' });
-    }
-    
     if (!newTime || isNaN(new Date(newTime).getTime())) {
-        return res.status(400).json({ error: 'Invalid timestamp format. Use ISO format (e.g., "2023-10-01T12:00:00Z")' });
+        return res.status(400).json({ error: 'Invalid timestamp format' });
     }
 
     const newTimeDate = new Date(newTime);
@@ -163,16 +193,16 @@ app.post('/admin/videos/:id/set-upload-time', authenticateAdmin, (req, res) => {
     }
 
     if (!videos[videoId]) {
-        videos[videoId] = { views: 0 };
+        videos[videoId] = { views: 0, title: `Video ${videoId}` };
     }
     
     videos[videoId].uploadTime = newTime;
     saveData();
     
-    res.json({ success: true, newUploadTime: newTime });
+    res.json({ success: true, video: videos[videoId] });
 });
 
-// Admin Endpoint: Bulk update upload times
+// Bulk update
 app.post('/admin/videos/bulk-update-times', authenticateAdmin, (req, res) => {
     const updates = req.body.updates;
     const now = new Date();
@@ -196,7 +226,7 @@ app.post('/admin/videos/bulk-update-times', authenticateAdmin, (req, res) => {
         }
         
         if (!videos[update.id]) {
-            videos[update.id] = { views: 0 };
+            videos[update.id] = { views: 0, title: `Video ${update.id}` };
         }
         
         videos[update.id].uploadTime = update.newTime;
@@ -214,66 +244,55 @@ app.post('/admin/videos/bulk-update-times', authenticateAdmin, (req, res) => {
     });
 });
 
-// Admin Endpoint: Get all videos
-app.get('/admin/videos', authenticateAdmin, (req, res) => {
-    res.json(videos);
-});
-
-// Admin Endpoint: Set view count for a video
+// Set views
 app.post('/admin/videos/:id/set-views', authenticateAdmin, (req, res) => {
     const videoId = req.params.id;
     const { views } = req.body;
     
-    if (!videoId) {
-        return res.status(400).json({ error: 'Video ID is required' });
-    }
-    
-    if (views === undefined || isNaN(parseInt(views)) || parseInt(views) < 0) {
+    if (views === undefined || isNaN(parseInt(views))) {
         return res.status(400).json({ error: 'Invalid view count' });
     }
     
     if (!videos[videoId]) {
-        videos[videoId] = { uploadTime: new Date().toISOString() };
+        videos[videoId] = { 
+            uploadTime: new Date().toISOString(),
+            title: `Video ${videoId}`
+        };
     }
     
     videos[videoId].views = parseInt(views);
     saveData();
     
-    res.json({ success: true, newViewCount: videos[videoId].views });
+    res.json({ success: true, video: videos[videoId] });
 });
 
-// Admin Endpoint: Delete a video
+// Delete video
 app.delete('/admin/videos/:id', authenticateAdmin, (req, res) => {
     const videoId = req.params.id;
-    
-    if (!videoId) {
-        return res.status(400).json({ error: 'Video ID is required' });
-    }
     
     if (!videos[videoId]) {
         return res.status(404).json({ error: 'Video not found' });
     }
     
     delete videos[videoId];
-    
-    if (viewedIPs[videoId]) {
-        delete viewedIPs[videoId];
-    }
-    
+    delete viewedIPs[videoId];
     saveData();
     
     res.json({ success: true, message: `Video ${videoId} deleted` });
 });
 
-// Serve admin panel (optional)
+// Serve admin panel
 app.get('/admin', (req, res) => {
     res.sendFile(path.join(__dirname, 'admin.html'));
 });
 
-// Error handling middleware
+// Serve frontend
+app.use(express.static(path.join(__dirname, 'public')));
+
+// Error handling
 app.use((err, req, res, next) => {
     console.error(err.stack);
-    res.status(500).json({ error: 'Something went wrong!' });
+    res.status(500).json({ error: 'Internal server error' });
 });
 
 // 404 handler
@@ -281,7 +300,7 @@ app.use((req, res) => {
     res.status(404).json({ error: 'Endpoint not found' });
 });
 
-// Initialize data and start server
+// Initialize and start server
 loadData();
 
 const PORT = process.env.PORT || 3001;
@@ -293,7 +312,7 @@ app.listen(PORT, () => {
     }
 });
 
-// Handle shutdown gracefully
+// Graceful shutdown
 process.on('SIGINT', () => {
     console.log('Saving data before shutdown...');
     saveData();
