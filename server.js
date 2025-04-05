@@ -12,7 +12,6 @@ app.use(bodyParser.json());
 const videos = {
     1: { views: 142, uploadTime: '2023-05-15T10:00:00Z' },
     2: { views: 87, uploadTime: '2023-06-20T14:30:00Z' },
-    3: { views: 256, uploadTime: '2023-07-10T09:15:00Z' }
 };
 
 // IP tracking for view protection
@@ -25,7 +24,7 @@ if (fs.existsSync('viewedIPs.json')) {
 }
 
 // Authentication middleware
-const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'your-secret-token';
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '227001';
 
 const authenticateAdmin = (req, res, next) => {
     const authToken = req.headers['authorization'];
@@ -140,6 +139,33 @@ app.post('/admin/videos/bulk-update-times', authenticateAdmin, (req, res) => {
 // Admin Endpoint: Get all videos
 app.get('/admin/videos', authenticateAdmin, (req, res) => {
     res.json(videos);
+});
+
+// Admin Endpoint: Set view count for a video
+app.post('/admin/videos/:id/set-views', authenticateAdmin, (req, res) => {
+    const videoId = req.params.id;
+    const { views } = req.body;
+    
+    if (views === undefined || isNaN(parseInt(views))) {
+        return res.status(400).json({ error: 'Invalid view count' });
+    }
+    
+    if (!videos[videoId]) {
+        videos[videoId] = { uploadTime: new Date().toISOString() };
+    }
+    
+    videos[videoId].views = parseInt(views);
+    res.json({ success: true, newViewCount: videos[videoId].views });
+});
+
+// Admin Endpoint: Delete a video
+app.delete('/admin/videos/:id', authenticateAdmin, (req, res) => {
+    const videoId = req.params.id;
+    if (!videos[videoId]) {
+        return res.status(404).json({ error: 'Video not found' });
+    }
+    delete videos[videoId];
+    res.json({ success: true, message: `Video ${videoId} deleted` });
 });
 
 // Start the server
