@@ -67,3 +67,15 @@ const PORT = 3001;
 app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
 });
+// Admin-only endpoint to set upload time
+app.post('/admin/videos/:id/set-upload-time', (req, res) => {
+  const videoId = req.params.id;
+  const { newTime } = req.body; // Expects ISO string like "2023-10-01T12:00:00Z"
+  
+  if (!videos[videoId]) {
+    videos[videoId] = { views: 0 };
+  }
+  
+  videos[videoId].uploadTime = newTime;
+  res.json({ success: true });
+});
