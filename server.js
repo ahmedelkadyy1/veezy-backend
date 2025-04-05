@@ -46,14 +46,16 @@ function loadData() {
                 videos[1] = { 
                     views: 0, 
                     uploadTime: new Date().toISOString(),
-                    title: "Blanx an E-commerce Website"
+                    title: "Blanx an E-commerce Website",
+                    loading: false
                 };
             }
             if (!videos[2]) {
                 videos[2] = { 
                     views: 0, 
                     uploadTime: new Date().toISOString(),
-                    title: "WatchNest a Movie Website"
+                    title: "WatchNest a Movie Website",
+                    loading: false
                 };
             }
         } else {
@@ -62,12 +64,14 @@ function loadData() {
                 1: { 
                     views: 0, 
                     uploadTime: new Date().toISOString(),
-                    title: "Blanx an E-commerce Website"
+                    title: "Blanx an E-commerce Website",
+                    loading: false
                 },
                 2: { 
                     views: 0, 
                     uploadTime: new Date().toISOString(),
-                    title: "WatchNest a Movie Website"
+                    title: "WatchNest a Movie Website",
+                    loading: false
                 }
             };
             viewedIPs = {};
@@ -76,8 +80,8 @@ function loadData() {
     } catch (err) {
         console.error('Error loading data:', err);
         videos = {
-            1: { views: 0, uploadTime: new Date().toISOString() },
-            2: { views: 0, uploadTime: new Date().toISOString() }
+            1: { views: 0, uploadTime: new Date().toISOString(), loading: false },
+            2: { views: 0, uploadTime: new Date().toISOString(), loading: false }
         };
         viewedIPs = {};
     }
@@ -128,7 +132,7 @@ app.get('/videos', (req, res) => {
     res.json(videos);
 });
 
-// Get single video
+// Get single video with loading state
 app.get('/videos/:id', apiLimiter, (req, res) => {
     const videoId = req.params.id;
     res.set('Cache-Control', 'no-store, max-age=0');
@@ -137,11 +141,15 @@ app.get('/videos/:id', apiLimiter, (req, res) => {
         return res.status(404).json({ error: 'Video not found' });
     }
     
-    res.json(videos[videoId]);
+    // Return video data with loading state
+    res.json({
+        ...videos[videoId],
+        loading: videos[videoId].loading || false
+    });
 });
 
-// Increment views
-app.post('/videos/:id/view', apiLimiter, (req, res) => {
+// Increment views with loading state
+app.post('/videos/:id/view', apiLimiter, async (req, res) => {
     const videoId = req.params.id;
     const clientIP = req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
 
@@ -149,7 +157,8 @@ app.post('/videos/:id/view', apiLimiter, (req, res) => {
         videos[videoId] = { 
             views: 0, 
             uploadTime: new Date().toISOString(),
-            title: `Video ${videoId}`
+            title: `Video ${videoId}`,
+            loading: true
         };
     }
 
@@ -157,16 +166,33 @@ app.post('/videos/:id/view', apiLimiter, (req, res) => {
         viewedIPs[videoId] = new Set();
     }
     
-    if (!viewedIPs[videoId].has(clientIP)) {
-        videos[videoId].views++;
-        viewedIPs[videoId].add(clientIP);
+    // Set loading state
+    videos[videoId].loading = true;
+    saveData();
+    
+    // Simulate processing delay (remove in production)
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+    try {
+        if (!viewedIPs[videoId].has(clientIP)) {
+            videos[videoId].views++;
+            viewedIPs[videoId].add(clientIP);
+        }
+        
+        res.json({ 
+            views: videos[videoId].views,
+            loading: false,
+            alreadyViewed: viewedIPs[videoId].has(clientIP)
+        });
+    } catch (error) {
+        res.status(500).json({ 
+            error: 'Failed to increment views',
+            loading: false
+        });
+    } finally {
+        videos[videoId].loading = false;
         saveData();
     }
-
-    res.json({ 
-        views: videos[videoId].views,
-        alreadyViewed: viewedIPs[videoId].has(clientIP)
-    });
 });
 
 // ================= ADMIN ENDPOINTS ================= //
@@ -193,7 +219,7 @@ app.post('/admin/videos/:id/set-upload-time', authenticateAdmin, (req, res) => {
     }
 
     if (!videos[videoId]) {
-        videos[videoId] = { views: 0, title: `Video ${videoId}` };
+        videos[videoId] = { views: 0, title: `Video ${videoId}`, loading: false };
     }
     
     videos[videoId].uploadTime = newTime;
@@ -226,7 +252,7 @@ app.post('/admin/videos/bulk-update-times', authenticateAdmin, (req, res) => {
         }
         
         if (!videos[update.id]) {
-            videos[update.id] = { views: 0, title: `Video ${update.id}` };
+            videos[update.id] = { views: 0, title: `Video ${update.id}`, loading: false };
         }
         
         videos[update.id].uploadTime = update.newTime;
@@ -256,7 +282,8 @@ app.post('/admin/videos/:id/set-views', authenticateAdmin, (req, res) => {
     if (!videos[videoId]) {
         videos[videoId] = { 
             uploadTime: new Date().toISOString(),
-            title: `Video ${videoId}`
+            title: `Video ${videoId}`,
+            loading: false
         };
     }
     
