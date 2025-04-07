@@ -5,7 +5,12 @@ const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const mongoose = require('mongoose');
+const fs = require('fs');
 const path = require('path');
+
+const videoPath = path.join(__dirname, 'models', 'Video.js');
+console.log('Checking Video.js at:', videoPath);
+console.log('File exists?', fs.existsSync(videoPath));
 
 const Video = require('./models/Video');
 const ViewedIP = require('./models/ViewedIP');
