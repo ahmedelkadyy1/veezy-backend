@@ -7,22 +7,20 @@ const rateLimit = require('express-rate-limit');
 const mongoose = require('mongoose');
 const fs = require('fs');
 const path = require('path');
+const multer = require('multer');
 
-const videoPath = path.join(__dirname, 'models', 'Video.js');
-console.log('Checking Video.js at:', videoPath);
-console.log('File exists?', fs.existsSync(videoPath));
-
+// Models
 const Video = require('./models/Video');
 const ViewedIP = require('./models/ViewedIP');
 
 const app = express();
 
-// Connect to MongoDB
+// MongoDB Connection
 mongoose.connect(process.env.MONGODB_URI)
   .then(() => console.log('Connected to MongoDB'))
   .catch(err => {
     console.error('MongoDB connection error:', err);
-    process.exit(1); // Exit if MongoDB connection fails
+    process.exit(1);
   });
 
 // Middleware
@@ -37,10 +35,47 @@ app.use(cors({
 }));
 app.use(bodyParser.json({ limit: '10kb' }));
 
+// Rate Limiting
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
   message: 'Too many requests from this IP, please try again later'
+});
+
+// File Upload Configuration
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    let uploadPath = 'uploads/';
+    if (file.fieldname === 'video') uploadPath += 'videos';
+    else if (file.fieldname === 'thumbnail') uploadPath += 'thumbnails';
+    else if (file.fieldname === 'channelIcon') uploadPath += 'icons';
+    
+    if (!fs.existsSync(uploadPath)) {
+      fs.mkdirSync(uploadPath, { recursive: true });
+    }
+    cb(null, uploadPath);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
+  }
+});
+
+const upload = multer({
+  storage: storage,
+  limits: { fileSize: 500 * 1024 * 1024 }, // 500MB
+  fileFilter: (req, file, cb) => {
+    if (file.fieldname === 'video') {
+      if (!file.originalname.match(/\.(mp4|webm|mov)$/)) {
+        return cb(new Error('Only video files are allowed!'));
+      }
+    } else if (file.fieldname === 'thumbnail' || file.fieldname === 'channelIcon') {
+      if (!file.originalname.match(/\.(jpg|jpeg|png|gif)$/)) {
+        return cb(new Error('Only image files are allowed!'));
+      }
+    }
+    cb(null, true);
+  }
 });
 
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '227001';
@@ -54,7 +89,7 @@ const authenticateAdmin = (req, res, next) => {
 let videos = {};
 let viewedIPs = {};
 
-// ========== Load Data from MongoDB ==========
+// ========== Data Loading ==========
 async function loadData() {
   try {
     const videoDocs = await Video.find();
@@ -64,11 +99,15 @@ async function loadData() {
         views: doc.views,
         uploadTime: doc.uploadTime.toISOString(),
         title: doc.title,
+        description: doc.description,
+        channelName: doc.channelName,
+        channelIcon: doc.channelIcon,
+        thumbnail: doc.thumbnail,
         loading: doc.loading || false
       };
     });
 
-    // Ensure defaults exist using upsert
+    // Default videos
     const defaultVideos = [
       {
         videoId: '1',
@@ -79,7 +118,7 @@ async function loadData() {
       },
       {
         videoId: '2',
-        title: "WatchNest a Movie Website",
+        title: "WatchNest a Movie Website", 
         views: 0,
         uploadTime: new Date(),
         loading: false
@@ -105,16 +144,11 @@ async function loadData() {
     console.log('Data loaded from MongoDB');
   } catch (err) {
     console.error('Failed to load data:', err);
-    throw err; // Re-throw to handle in the calling code
+    throw err;
   }
 }
 
-// Placeholder for compatibility
-async function saveData() {
-  console.log('Data saved (MongoDB updates are live)');
-}
-
-// ========== Public Routes ==========
+// ========== Routes ==========
 app.get('/health', (req, res) => {
   res.json({
     status: 'healthy',
@@ -177,6 +211,58 @@ app.post('/videos/:id/view', apiLimiter, async (req, res) => {
 
 // ========== Admin Routes ==========
 app.get('/admin/videos', authenticateAdmin, (req, res) => res.json(videos));
+
+app.post('/admin/upload', authenticateAdmin, upload.fields([
+  { name: 'video', maxCount: 1 },
+  { name: 'thumbnail', maxCount: 1 },
+  { name: 'channelIcon', maxCount: 1 }
+]), async (req, res) => {
+  try {
+    if (!req.files['video'] || !req.files['thumbnail'] || !req.files['channelIcon']) {
+      throw new Error('All files are required');
+    }
+
+    const videoId = Date.now().toString();
+    const newVideo = new Video({
+      videoId,
+      title: req.body.title,
+      description: req.body.description,
+      channelName: req.body.channelName,
+      channelIcon: req.files['channelIcon'][0].filename,
+      filename: req.files['video'][0].filename,
+      thumbnail: req.files['thumbnail'][0].filename,
+      views: 0,
+      uploadTime: new Date(),
+      duration: '00:56'
+    });
+
+    await newVideo.save();
+    
+    // Update in-memory cache
+    videos[videoId] = {
+      title: req.body.title,
+      description: req.body.description,
+      channelName: req.body.channelName,
+      channelIcon: req.files['channelIcon'][0].filename,
+      thumbnail: req.files['thumbnail'][0].filename,
+      views: 0,
+      uploadTime: new Date().toISOString(),
+      loading: false
+    };
+
+    res.status(201).json({ success: true, video: newVideo });
+  } catch (error) {
+    // Clean up uploaded files if error occurs
+    if (req.files) {
+      Object.values(req.files).forEach(files => {
+        files.forEach(file => {
+          fs.unlink(file.path, () => {});
+        });
+      });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
 
 app.post('/admin/videos/:id/set-upload-time', authenticateAdmin, async (req, res) => {
   const { id } = req.params;
@@ -261,10 +347,8 @@ app.delete('/admin/videos/:id', authenticateAdmin, async (req, res) => {
   res.json({ success: true, message: `Video ${id} deleted` });
 });
 
-// ========== Static + Fallback ==========
-app.get('/admin', (req, res) => {
-  res.sendFile(path.join(__dirname, 'admin.html'));
-});
+// ========== Static Files ==========
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ========== Error Handling ==========
@@ -272,11 +356,12 @@ app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(500).json({ error: 'Internal server error' });
 });
+
 app.use((req, res) => {
   res.status(404).json({ error: 'Endpoint not found' });
 });
 
-// ========== Init ==========
+// ========== Initialization ==========
 loadData().catch(err => {
   console.error('Failed to load initial data:', err);
 });
@@ -290,7 +375,7 @@ app.listen(PORT, () => {
   }
 });
 
-// Graceful shutdown - MongoDB connections should be closed
+// Graceful Shutdown
 process.on('SIGINT', async () => {
   console.log('Closing MongoDB connection and shutting down...');
   await mongoose.connection.close();
