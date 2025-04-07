@@ -7,10 +7,7 @@ const rateLimit = require('express-rate-limit');
 const mongoose = require('mongoose');
 const fs = require('fs');
 const path = require('path');
-
-const videoPath = path.join(__dirname, 'models', 'Video.js');
-console.log('Checking Video.js at:', videoPath);
-console.log('File exists?', fs.existsSync(videoPath));
+const multer = require('multer');
 
 const Video = require('./models/Video');
 const ViewedIP = require('./models/ViewedIP');
@@ -22,8 +19,49 @@ mongoose.connect(process.env.MONGODB_URI)
   .then(() => console.log('Connected to MongoDB'))
   .catch(err => {
     console.error('MongoDB connection error:', err);
-    process.exit(1); // Exit if MongoDB connection fails
+    process.exit(1);
   });
+
+// Configure permanent file storage
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const type = file.fieldname === 'video' ? 'videos' : 'thumbnails';
+    const dir = path.join(__dirname, 'uploads', type);
+    
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    
+    cb(null, dir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const ext = path.extname(file.originalname);
+    cb(null, file.fieldname + '-' + uniqueSuffix + ext);
+  }
+});
+
+const fileFilter = (req, file, cb) => {
+  if (file.fieldname === 'video') {
+    if (!file.originalname.match(/\.(mp4|mov|avi|mkv|webm)$/i)) {
+      return cb(new Error('Only video files are allowed'), false);
+    }
+  } else if (file.fieldname === 'thumbnail') {
+    if (!file.originalname.match(/\.(jpg|jpeg|png|gif)$/i)) {
+      return cb(new Error('Only image files are allowed'), false);
+    }
+  }
+  cb(null, true);
+};
+
+const upload = multer({
+  storage: storage,
+  limits: {
+    fileSize: 500 * 1024 * 1024, // 500MB limit
+    files: 2
+  },
+  fileFilter: fileFilter
+});
 
 // Middleware
 app.use(helmet());
@@ -36,6 +74,7 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 app.use(bodyParser.json({ limit: '10kb' }));
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -68,7 +107,6 @@ async function loadData() {
       };
     });
 
-    // Ensure defaults exist using upsert
     const defaultVideos = [
       {
         videoId: '1',
@@ -94,7 +132,6 @@ async function loadData() {
       );
     }
 
-    // Load viewed IPs
     const ipDocs = await ViewedIP.find();
     viewedIPs = {};
     ipDocs.forEach(doc => {
@@ -105,13 +142,8 @@ async function loadData() {
     console.log('Data loaded from MongoDB');
   } catch (err) {
     console.error('Failed to load data:', err);
-    throw err; // Re-throw to handle in the calling code
+    throw err;
   }
-}
-
-// Placeholder for compatibility
-async function saveData() {
-  console.log('Data saved (MongoDB updates are live)');
 }
 
 // ========== Public Routes ==========
@@ -177,6 +209,81 @@ app.post('/videos/:id/view', apiLimiter, async (req, res) => {
 
 // ========== Admin Routes ==========
 app.get('/admin/videos', authenticateAdmin, (req, res) => res.json(videos));
+
+app.post('/admin/videos/upload', 
+  authenticateAdmin,
+  upload.fields([
+    { name: 'video', maxCount: 1 },
+    { name: 'thumbnail', maxCount: 1 }
+  ]),
+  async (req, res) => {
+    try {
+      const { title, description, category } = req.body;
+      const videoFile = req.files['video']?.[0];
+      const thumbnailFile = req.files['thumbnail']?.[0];
+
+      if (!videoFile) {
+        if (thumbnailFile) fs.unlinkSync(thumbnailFile.path);
+        return res.status(400).json({ error: 'Video file is required' });
+      }
+
+      const videoIds = Object.keys(videos).map(Number);
+      const newId = videoIds.length > 0 ? Math.max(...videoIds) + 1 : 1;
+      const videoId = String(newId);
+
+      const newVideo = {
+        videoId,
+        title: title || `Video ${newId}`,
+        description: description || '',
+        views: 0,
+        uploadTime: new Date(),
+        videoPath: path.relative(__dirname, videoFile.path),
+        thumbnailPath: thumbnailFile ? path.relative(__dirname, thumbnailFile.path) : null,
+        category: category || 'other',
+        loading: false
+      };
+
+      const videoDoc = new Video(newVideo);
+      await videoDoc.save();
+
+      videos[newId] = {
+        views: 0,
+        uploadTime: newVideo.uploadTime.toISOString(),
+        title: newVideo.title,
+        loading: false
+      };
+
+      res.status(201).json({
+        success: true,
+        video: {
+          id: newId,
+          title: newVideo.title,
+          views: 0,
+          uploadTime: newVideo.uploadTime,
+          thumbnailUrl: thumbnailFile ? `/uploads/thumbnails/${path.basename(thumbnailFile.path)}` : null
+        }
+      });
+
+    } catch (error) {
+      if (req.files) {
+        for (const fileType in req.files) {
+          req.files[fileType].forEach(file => {
+            if (fs.existsSync(file.path)) {
+              fs.unlinkSync(file.path);
+            }
+          });
+        }
+      }
+      
+      console.error('Video upload error:', error);
+      res.status(500).json({ 
+        success: false,
+        error: 'Failed to upload video',
+        details: process.env.NODE_ENV === 'development' ? error.message : undefined
+      });
+    }
+  }
+);
 
 app.post('/admin/videos/:id/set-upload-time', authenticateAdmin, async (req, res) => {
   const { id } = req.params;
@@ -252,6 +359,17 @@ app.delete('/admin/videos/:id', authenticateAdmin, async (req, res) => {
 
   if (!videos[id]) return res.status(404).json({ error: 'Video not found' });
 
+  // Get video info before deleting to clean up files
+  const video = await Video.findOne({ videoId: id });
+  if (video) {
+    if (video.videoPath && fs.existsSync(path.join(__dirname, video.videoPath))) {
+      fs.unlinkSync(path.join(__dirname, video.videoPath));
+    }
+    if (video.thumbnailPath && fs.existsSync(path.join(__dirname, video.thumbnailPath))) {
+      fs.unlinkSync(path.join(__dirname, video.thumbnailPath));
+    }
+  }
+
   delete videos[id];
   delete viewedIPs[id];
 
@@ -277,6 +395,14 @@ app.use((req, res) => {
 });
 
 // ========== Init ==========
+// Ensure upload directories exist
+['videos', 'thumbnails'].forEach(type => {
+  const dir = path.join(__dirname, 'uploads', type);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+});
+
 loadData().catch(err => {
   console.error('Failed to load initial data:', err);
 });
@@ -290,7 +416,6 @@ app.listen(PORT, () => {
   }
 });
 
-// Graceful shutdown - MongoDB connections should be closed
 process.on('SIGINT', async () => {
   console.log('Closing MongoDB connection and shutting down...');
   await mongoose.connection.close();
