@@ -18,7 +18,7 @@ const ViewedIP = require('./models/ViewedIP');
 const app = express();
 
 // Connect to MongoDB
-mongoose.connect(process.env.MONGODB_URI || 'r-connection-string-heremongodb+srv://ahmedmegahed:<db_password>@ahmedmegahed.fwtuk2k.mongodb.net/?retryWrites=true&w=majority&appName=ahmedmegahed')
+mongoose.connect(process.env.MONGODB_URI || 'mongodb+srv://ahmedmegahed:<db_password>@ahmedmegahed.fwtuk2k.mongodb.net/?retryWrites=true&w=majority&appName=ahmedmegahed')
   .then(() => console.log('Connected to MongoDB'))
   .catch(err => console.error('MongoDB connection error:', err));
 
