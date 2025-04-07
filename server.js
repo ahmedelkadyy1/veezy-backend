@@ -88,7 +88,22 @@ const authenticateAdmin = (req, res, next) => {
 // In-memory cache
 let videos = {};
 let viewedIPs = {};
-
+// In your server.js
+app.post('/admin/upload', upload.fields([
+    { name: 'video', maxCount: 1 },
+    { name: 'thumbnail', maxCount: 1 },
+    { name: 'channelIcon', maxCount: 1 }
+  ]), async (req, res) => {
+    const newVideo = new Video({
+      title: req.body.title,
+      description: req.body.description,
+      channelName: req.body.channelName,
+      channelIcon: req.files['channelIcon'][0].filename,
+      filename: req.files['video'][0].filename,
+      thumbnail: req.files['thumbnail'][0].filename
+    });
+    await newVideo.save();
+  });
 // ========== Data Loading ==========
 async function loadData() {
   try {
