@@ -24,7 +24,7 @@ const VideoSchema = new mongoose.Schema({
   }
 });
 
-// module.exports = mongoose.model('Video', VideoSchema);
+module.exports = mongoose.model('Video', VideoSchema);
 
 // const videoSchema = new mongoose.Schema({
 //   videoId: { type: String, required: true, unique: true },
