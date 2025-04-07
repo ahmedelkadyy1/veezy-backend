@@ -2,351 +2,297 @@ require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
-const path = require('path');
-const fs = require('fs');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const mongoose = require('mongoose');
+const path = require('path');
+
+const Video = require('./models/Video');
+const ViewedIP = require('./models/ViewedIP');
+
 const app = express();
 
-// Enhanced security middleware
+// Connect to MongoDB
+mongoose.connect(process.env.MONGODB_URI || 'r-connection-string-heremongodb+srv://ahmedmegahed:<db_password>@ahmedmegahed.fwtuk2k.mongodb.net/?retryWrites=true&w=majority&appName=ahmedmegahed')
+  .then(() => console.log('Connected to MongoDB'))
+  .catch(err => console.error('MongoDB connection error:', err));
+
+// Middleware
 app.use(helmet());
 app.use(cors({
-    origin: [
-        'https://veezy-frontend.vercel.app',
-        'http://localhost:3000'
-    ],
-    methods: ['GET', 'POST', 'DELETE'],
-    allowedHeaders: ['Content-Type', 'Authorization']
+  origin: [
+    'https://veezy-frontend.vercel.app',
+    'http://localhost:3000'
+  ],
+  methods: ['GET', 'POST', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
 app.use(bodyParser.json({ limit: '10kb' }));
 
-// Rate limiting
 const apiLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 100,
-    message: 'Too many requests from this IP, please try again later'
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  message: 'Too many requests from this IP, please try again later'
 });
 
-// Database setup
-const DATA_FILE = path.join(__dirname, 'data.json');
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '227001';
+const authenticateAdmin = (req, res, next) => {
+  const token = req.headers['authorization']?.split(' ')[1];
+  if (token !== ADMIN_TOKEN) return res.status(403).json({ error: 'Invalid admin token' });
+  next();
+};
+
+// In-memory cache
 let videos = {};
 let viewedIPs = {};
 
-// Improved data loading with defaults
-function loadData() {
-    try {
-        if (fs.existsSync(DATA_FILE)) {
-            const data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-            videos = data.videos || {};
-            viewedIPs = data.viewedIPs || {};
-            
-            // Initialize default videos if they don't exist
-            if (!videos[1]) {
-                videos[1] = { 
-                    views: 0, 
-                    uploadTime: new Date().toISOString(),
-                    title: "Blanx an E-commerce Website",
-                    loading: false
-                };
-            }
-            if (!videos[2]) {
-                videos[2] = { 
-                    views: 0, 
-                    uploadTime: new Date().toISOString(),
-                    title: "WatchNest a Movie Website",
-                    loading: false
-                };
-            }
-        } else {
-            // Initialize with default data
-            videos = {
-                1: { 
-                    views: 0, 
-                    uploadTime: new Date().toISOString(),
-                    title: "Blanx an E-commerce Website",
-                    loading: false
-                },
-                2: { 
-                    views: 0, 
-                    uploadTime: new Date().toISOString(),
-                    title: "WatchNest a Movie Website",
-                    loading: false
-                }
-            };
-            viewedIPs = {};
-            saveData();
-        }
-    } catch (err) {
-        console.error('Error loading data:', err);
-        videos = {
-            1: { views: 0, uploadTime: new Date().toISOString(), loading: false },
-            2: { views: 0, uploadTime: new Date().toISOString(), loading: false }
-        };
-        viewedIPs = {};
+// ========== Load Data from MongoDB ==========
+async function loadData() {
+  try {
+    const videoDocs = await Video.find();
+    videos = {};
+    videoDocs.forEach(doc => {
+      videos[doc.videoId] = {
+        views: doc.views,
+        uploadTime: doc.uploadTime.toISOString(),
+        title: doc.title,
+        loading: doc.loading || false
+      };
+    });
+
+    // Ensure defaults exist using upsert
+    const defaultVideos = [
+      {
+        videoId: '1',
+        title: "Blanx an E-commerce Website",
+        views: 0,
+        uploadTime: new Date(),
+        loading: false
+      },
+      {
+        videoId: '2',
+        title: "WatchNest a Movie Website",
+        views: 0,
+        uploadTime: new Date(),
+        loading: false
+      }
+    ];
+
+    for (const defaultVideo of defaultVideos) {
+      await Video.updateOne(
+        { videoId: defaultVideo.videoId },
+        { $setOnInsert: defaultVideo },
+        { upsert: true }
+      );
     }
+
+    // Load viewed IPs
+    const ipDocs = await ViewedIP.find();
+    viewedIPs = {};
+    ipDocs.forEach(doc => {
+      if (!viewedIPs[doc.videoId]) viewedIPs[doc.videoId] = new Set();
+      viewedIPs[doc.videoId].add(doc.ip);
+    });
+
+    console.log('Data loaded from MongoDB');
+  } catch (err) {
+    console.error('Failed to load data:', err);
+  }
 }
 
-// Enhanced save function with error handling
-function saveData() {
-    try {
-        const data = { videos, viewedIPs };
-        fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2), 'utf8');
-    } catch (err) {
-        console.error('Error saving data:', err);
-    }
+// Placeholder for compatibility
+async function saveData() {
+  console.log('Data saved (MongoDB updates are live)');
 }
 
-// Authentication
-const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '227001';
-
-const authenticateAdmin = (req, res, next) => {
-    const authHeader = req.headers['authorization'];
-    
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        return res.status(401).json({ error: 'Authorization header missing or invalid' });
-    }
-    
-    const token = authHeader.split(' ')[1];
-    if (token !== ADMIN_TOKEN) {
-        return res.status(403).json({ error: 'Invalid admin token' });
-    }
-    
-    next();
-};
-
-// ================= API ENDPOINTS ================= //
-
-// Health check endpoint
+// ========== Public Routes ==========
 app.get('/health', (req, res) => {
-    res.json({ 
-        status: 'healthy', 
-        timestamp: new Date().toISOString(),
-        videoCount: Object.keys(videos).length 
-    });
+  res.json({
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    videoCount: Object.keys(videos).length
+  });
 });
 
-// Get all videos
 app.get('/videos', (req, res) => {
-    res.set('Cache-Control', 'no-store, max-age=0');
-    res.json(videos);
+  res.set('Cache-Control', 'no-store, max-age=0');
+  res.json(videos);
 });
 
-// Get single video with loading state
 app.get('/videos/:id', apiLimiter, (req, res) => {
-    const videoId = req.params.id;
-    res.set('Cache-Control', 'no-store, max-age=0');
-    
-    if (!videos[videoId]) {
-        return res.status(404).json({ error: 'Video not found' });
-    }
-    
-    // Return video data with loading state
-    res.json({
-        ...videos[videoId],
-        loading: videos[videoId].loading || false
-    });
+  const videoId = req.params.id;
+  const video = videos[videoId];
+  if (!video) return res.status(404).json({ error: 'Video not found' });
+  res.set('Cache-Control', 'no-store, max-age=0');
+  res.json({ ...video, loading: video.loading || false });
 });
 
-// Increment views with loading state
 app.post('/videos/:id/view', apiLimiter, async (req, res) => {
-    const videoId = req.params.id;
-    const clientIP = req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
+  const videoId = req.params.id;
+  const clientIP = req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
 
-    if (!videos[videoId]) {
-        videos[videoId] = { 
-            views: 0, 
-            uploadTime: new Date().toISOString(),
-            title: `Video ${videoId}`,
-            loading: true
-        };
+  if (!videos[videoId]) {
+    videos[videoId] = {
+      views: 0,
+      uploadTime: new Date().toISOString(),
+      title: `Video ${videoId}`,
+      loading: true
+    };
+  }
+
+  if (!viewedIPs[videoId]) viewedIPs[videoId] = new Set();
+
+  videos[videoId].loading = true;
+
+  await new Promise(resolve => setTimeout(resolve, 500)); // Simulated delay
+
+  try {
+    if (!viewedIPs[videoId].has(clientIP)) {
+      videos[videoId].views++;
+      viewedIPs[videoId].add(clientIP);
+
+      await Video.updateOne({ videoId }, { $inc: { views: 1 } });
+      await ViewedIP.create({ videoId, ip: clientIP });
     }
 
-    if (!viewedIPs[videoId]) {
-        viewedIPs[videoId] = new Set();
-    }
-    
-    // Set loading state
-    videos[videoId].loading = true;
-    saveData();
-    
-    // Simulate processing delay (remove in production)
-    await new Promise(resolve => setTimeout(resolve, 500));
-    
-    try {
-        if (!viewedIPs[videoId].has(clientIP)) {
-            videos[videoId].views++;
-            viewedIPs[videoId].add(clientIP);
-        }
-        
-        res.json({ 
-            views: videos[videoId].views,
-            loading: false,
-            alreadyViewed: viewedIPs[videoId].has(clientIP)
-        });
-    } catch (error) {
-        res.status(500).json({ 
-            error: 'Failed to increment views',
-            loading: false
-        });
-    } finally {
-        videos[videoId].loading = false;
-        saveData();
-    }
-});
-
-// ================= ADMIN ENDPOINTS ================= //
-
-// Get all videos (admin)
-app.get('/admin/videos', authenticateAdmin, (req, res) => {
-    res.json(videos);
-});
-
-// Set upload time
-app.post('/admin/videos/:id/set-upload-time', authenticateAdmin, (req, res) => {
-    const videoId = req.params.id;
-    const { newTime } = req.body;
-    
-    if (!newTime || isNaN(new Date(newTime).getTime())) {
-        return res.status(400).json({ error: 'Invalid timestamp format' });
-    }
-
-    const newTimeDate = new Date(newTime);
-    const now = new Date();
-    
-    if (newTimeDate > now) {
-        return res.status(400).json({ error: 'Upload time cannot be in the future' });
-    }
-
-    if (!videos[videoId]) {
-        videos[videoId] = { views: 0, title: `Video ${videoId}`, loading: false };
-    }
-    
-    videos[videoId].uploadTime = newTime;
-    saveData();
-    
-    res.json({ success: true, video: videos[videoId] });
-});
-
-// Bulk update
-app.post('/admin/videos/bulk-update-times', authenticateAdmin, (req, res) => {
-    const updates = req.body.updates;
-    const now = new Date();
-    
-    if (!Array.isArray(updates)) {
-        return res.status(400).json({ error: 'Expected array of updates' });
-    }
-    
-    const results = [];
-    const errors = [];
-    
-    updates.forEach(update => {
-        if (!update.id || !update.newTime || isNaN(new Date(update.newTime).getTime())) {
-            errors.push(`Invalid update for ID: ${update.id}`);
-            return;
-        }
-        
-        if (new Date(update.newTime) > now) {
-            errors.push(`Future date not allowed for ID: ${update.id}`);
-            return;
-        }
-        
-        if (!videos[update.id]) {
-            videos[update.id] = { views: 0, title: `Video ${update.id}`, loading: false };
-        }
-        
-        videos[update.id].uploadTime = update.newTime;
-        results.push({ id: update.id, status: 'updated', newTime: update.newTime });
+    res.json({
+      views: videos[videoId].views,
+      loading: false,
+      alreadyViewed: viewedIPs[videoId].has(clientIP)
     });
-    
-    saveData();
-    
-    res.json({ 
-        success: errors.length === 0,
-        updatedCount: results.length,
-        errorCount: errors.length,
-        results,
-        errors: errors.length > 0 ? errors : undefined
-    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to increment views', loading: false });
+  } finally {
+    videos[videoId].loading = false;
+  }
 });
 
-// Set views
-app.post('/admin/videos/:id/set-views', authenticateAdmin, (req, res) => {
-    const videoId = req.params.id;
-    const { views } = req.body;
-    
-    if (views === undefined || isNaN(parseInt(views))) {
-        return res.status(400).json({ error: 'Invalid view count' });
-    }
-    
-    if (!videos[videoId]) {
-        videos[videoId] = { 
-            uploadTime: new Date().toISOString(),
-            title: `Video ${videoId}`,
-            loading: false
-        };
-    }
-    
-    videos[videoId].views = parseInt(views);
-    saveData();
-    
-    res.json({ success: true, video: videos[videoId] });
+// ========== Admin Routes ==========
+app.get('/admin/videos', authenticateAdmin, (req, res) => res.json(videos));
+
+app.post('/admin/videos/:id/set-upload-time', authenticateAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { newTime } = req.body;
+
+  if (!newTime || isNaN(new Date(newTime).getTime()))
+    return res.status(400).json({ error: 'Invalid timestamp format' });
+
+  if (new Date(newTime) > new Date())
+    return res.status(400).json({ error: 'Upload time cannot be in the future' });
+
+  if (!videos[id]) videos[id] = { views: 0, title: `Video ${id}`, loading: false };
+
+  videos[id].uploadTime = newTime;
+  await Video.updateOne({ videoId: id }, { uploadTime: new Date(newTime) }, { upsert: true });
+  res.json({ success: true, video: videos[id] });
 });
 
-// Delete video
-app.delete('/admin/videos/:id', authenticateAdmin, (req, res) => {
-    const videoId = req.params.id;
-    
-    if (!videos[videoId]) {
-        return res.status(404).json({ error: 'Video not found' });
+app.post('/admin/videos/bulk-update-times', authenticateAdmin, async (req, res) => {
+  const updates = req.body.updates;
+  const now = new Date();
+  const results = [], errors = [];
+
+  if (!Array.isArray(updates)) {
+    return res.status(400).json({ error: 'Expected array of updates' });
+  }
+
+  for (const { id, newTime } of updates) {
+    if (!id || !newTime || isNaN(new Date(newTime).getTime())) {
+      errors.push(`Invalid update for ID: ${id}`);
+      continue;
     }
-    
-    delete videos[videoId];
-    delete viewedIPs[videoId];
-    saveData();
-    
-    res.json({ success: true, message: `Video ${videoId} deleted` });
+
+    if (new Date(newTime) > now) {
+      errors.push(`Future date not allowed for ID: ${id}`);
+      continue;
+    }
+
+    if (!videos[id]) videos[id] = { views: 0, title: `Video ${id}`, loading: false };
+    videos[id].uploadTime = newTime;
+    await Video.updateOne({ videoId: id }, { uploadTime: new Date(newTime) }, { upsert: true });
+    results.push({ id, status: 'updated', newTime });
+  }
+
+  res.json({
+    success: errors.length === 0,
+    updatedCount: results.length,
+    errorCount: errors.length,
+    results,
+    errors: errors.length > 0 ? errors : undefined
+  });
 });
 
-// Serve admin panel
+app.post('/admin/videos/:id/set-views', authenticateAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { views: newViews } = req.body;
+
+  if (newViews === undefined || isNaN(parseInt(newViews)))
+    return res.status(400).json({ error: 'Invalid view count' });
+
+  if (!videos[id]) {
+    videos[id] = { uploadTime: new Date().toISOString(), title: `Video ${id}`, loading: false };
+  }
+
+  videos[id].views = parseInt(newViews);
+  await Video.updateOne({ videoId: id }, { views: parseInt(newViews) }, { upsert: true });
+
+  res.json({ success: true, video: videos[id] });
+});
+
+app.delete('/admin/videos/:id', authenticateAdmin, async (req, res) => {
+  const { id } = req.params;
+
+  if (!videos[id]) return res.status(404).json({ error: 'Video not found' });
+
+  delete videos[id];
+  delete viewedIPs[id];
+
+  await Video.deleteOne({ videoId: id });
+  await ViewedIP.deleteMany({ videoId: id });
+
+  res.json({ success: true, message: `Video ${id} deleted` });
+});
+
+// ========== Static + Fallback ==========
 app.get('/admin', (req, res) => {
-    res.sendFile(path.join(__dirname, 'admin.html'));
+  res.sendFile(path.join(__dirname, 'admin.html'));
 });
-
-// Serve frontend
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Error handling
+// ========== Error Handling ==========
 app.use((err, req, res, next) => {
-    console.error(err.stack);
-    res.status(500).json({ error: 'Internal server error' });
+  console.error(err.stack);
+  res.status(500).json({ error: 'Internal server error' });
 });
-
-// 404 handler
 app.use((req, res) => {
-    res.status(404).json({ error: 'Endpoint not found' });
+  res.status(404).json({ error: 'Endpoint not found' });
 });
 
-// Initialize and start server
+// ========== Init ==========
 loadData();
-
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+  console.log(`Admin panel: http://localhost:${PORT}/admin`);
+  if (process.env.NODE_ENV !== 'production') {
+    console.log(`Admin token: ${ADMIN_TOKEN}`);
+  }
+});
+
+app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
-    console.log(`Admin panel: http://localhost:${PORT}/admin`);
-    if (process.env.NODE_ENV !== 'production') {
-        console.log(`Admin token: ${ADMIN_TOKEN}`);
-    }
-});
-
-// Graceful shutdown
-process.on('SIGINT', () => {
-    console.log('Saving data before shutdown...');
-    saveData();
+  });
+  
+  // Graceful shutdown - MongoDB connections should be closed
+  process.on('SIGINT', async () => {
+    console.log('Closing MongoDB connection and shutting down...');
+    await mongoose.connection.close();
     process.exit(0);
-});
-
-process.on('SIGTERM', () => {
-    console.log('Saving data before shutdown...');
-    saveData();
+  });
+  
+  process.on('SIGTERM', async () => {
+    console.log('Closing MongoDB connection and shutting down...');
+    await mongoose.connection.close();
     process.exit(0);
-});
+  });
+  
