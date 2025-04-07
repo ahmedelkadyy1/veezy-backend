@@ -18,9 +18,12 @@ const ViewedIP = require('./models/ViewedIP');
 const app = express();
 
 // Connect to MongoDB
-mongoose.connect(process.env.MONGODB_URI || 'mongodb+srv://ahmedmegahed:A2270015858a@ahmedmegahed.fwtuk2k.mongodb.net/?retryWrites=true&w=majority&appName=ahmedmegahed')
+mongoose.connect(process.env.MONGODB_URI)
   .then(() => console.log('Connected to MongoDB'))
-  .catch(err => console.error('MongoDB connection error:', err));
+  .catch(err => {
+    console.error('MongoDB connection error:', err);
+    process.exit(1); // Exit if MongoDB connection fails
+  });
 
 // Middleware
 app.use(helmet());
@@ -102,6 +105,7 @@ async function loadData() {
     console.log('Data loaded from MongoDB');
   } catch (err) {
     console.error('Failed to load data:', err);
+    throw err; // Re-throw to handle in the calling code
   }
 }
 
@@ -149,8 +153,6 @@ app.post('/videos/:id/view', apiLimiter, async (req, res) => {
 
   videos[videoId].loading = true;
 
-  await new Promise(resolve => setTimeout(resolve, 500)); // Simulated delay
-
   try {
     if (!viewedIPs[videoId].has(clientIP)) {
       videos[videoId].views++;
@@ -166,6 +168,7 @@ app.post('/videos/:id/view', apiLimiter, async (req, res) => {
       alreadyViewed: viewedIPs[videoId].has(clientIP)
     });
   } catch (error) {
+    console.error('Error incrementing views:', error);
     res.status(500).json({ error: 'Failed to increment views', loading: false });
   } finally {
     videos[videoId].loading = false;
@@ -274,7 +277,10 @@ app.use((req, res) => {
 });
 
 // ========== Init ==========
-loadData();
+loadData().catch(err => {
+  console.error('Failed to load initial data:', err);
+});
+
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
@@ -284,20 +290,15 @@ app.listen(PORT, () => {
   }
 });
 
-app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-  });
-  
-  // Graceful shutdown - MongoDB connections should be closed
-  process.on('SIGINT', async () => {
-    console.log('Closing MongoDB connection and shutting down...');
-    await mongoose.connection.close();
-    process.exit(0);
-  });
-  
-  process.on('SIGTERM', async () => {
-    console.log('Closing MongoDB connection and shutting down...');
-    await mongoose.connection.close();
-    process.exit(0);
-  });
-  
+// Graceful shutdown - MongoDB connections should be closed
+process.on('SIGINT', async () => {
+  console.log('Closing MongoDB connection and shutting down...');
+  await mongoose.connection.close();
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  console.log('Closing MongoDB connection and shutting down...');
+  await mongoose.connection.close();
+  process.exit(0);
+});
