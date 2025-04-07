@@ -228,56 +228,56 @@ app.post('/videos/:id/view', apiLimiter, async (req, res) => {
 app.get('/admin/videos', authenticateAdmin, (req, res) => res.json(videos));
 
 app.post('/admin/upload', authenticateAdmin, upload.fields([
-  { name: 'video', maxCount: 1 },
-  { name: 'thumbnail', maxCount: 1 },
-  { name: 'channelIcon', maxCount: 1 }
-]), async (req, res) => {
-  try {
-    if (!req.files['video'] || !req.files['thumbnail'] || !req.files['channelIcon']) {
-      throw new Error('All files are required');
-    }
-
-    const videoId = Date.now().toString();
-    const newVideo = new Video({
-      videoId,
-      title: req.body.title,
-      description: req.body.description,
-      channelName: req.body.channelName,
-      channelIcon: req.files['channelIcon'][0].filename,
-      filename: req.files['video'][0].filename,
-      thumbnail: req.files['thumbnail'][0].filename,
-      views: 0,
-      uploadTime: new Date(),
-      duration: '00:56'
-    });
-
-    await newVideo.save();
-    
-    // Update in-memory cache
-    videos[videoId] = {
-      title: req.body.title,
-      description: req.body.description,
-      channelName: req.body.channelName,
-      channelIcon: req.files['channelIcon'][0].filename,
-      thumbnail: req.files['thumbnail'][0].filename,
-      views: 0,
-      uploadTime: new Date().toISOString(),
-      loading: false
-    };
-
-    res.status(201).json({ success: true, video: newVideo });
-  } catch (error) {
-    // Clean up uploaded files if error occurs
-    if (req.files) {
-      Object.values(req.files).forEach(files => {
-        files.forEach(file => {
-          fs.unlink(file.path, () => {});
-        });
+    { name: 'video', maxCount: 1 },
+    { name: 'thumbnail', maxCount: 1 },
+    { name: 'channelIcon', maxCount: 1 }
+  ]), async (req, res) => {
+    try {
+      if (!req.files) {
+        throw new Error('No files were uploaded');
+      }
+  
+      const videoId = Date.now().toString();
+      const newVideo = new Video({
+        videoId,
+        title: req.body.title,
+        description: req.body.description,
+        channelName: req.body.channelName,
+        channelIcon: req.files['channelIcon'][0].filename,
+        filename: req.files['video'][0].filename,
+        thumbnail: req.files['thumbnail'][0].filename,
+        views: 0,
+        uploadTime: new Date()
       });
+  
+      await newVideo.save();
+  
+      // Update in-memory cache
+      videos[videoId] = {
+        title: req.body.title,
+        description: req.body.description,
+        channelName: req.body.channelName,
+        channelIcon: req.files['channelIcon'][0].filename,
+        thumbnail: req.files['thumbnail'][0].filename,
+        views: 0,
+        uploadTime: new Date().toISOString(),
+        loading: false
+      };
+  
+      res.json({ success: true, video: newVideo });
+  
+    } catch (error) {
+      // Clean up uploaded files if error occurs
+      if (req.files) {
+        Object.values(req.files).forEach(files => {
+          files.forEach(file => {
+            fs.unlink(file.path, () => {});
+          });
+        });
+      }
+      res.status(500).json({ error: error.message });
     }
-    res.status(500).json({ error: error.message });
-  }
-});
+  });
 
 app.post('/admin/videos/:id/set-upload-time', authenticateAdmin, async (req, res) => {
   const { id } = req.params;
