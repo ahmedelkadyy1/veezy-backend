@@ -25,15 +25,11 @@ mongoose.connect(process.env.MONGODB_URI)
 
 // Middleware
 app.use(helmet());
+const cors = require('cors');
 app.use(cors({
-  origin: [
-    'https://veezy-frontend.vercel.app',
-    'http://localhost:3000',
-    'http://127.0.0.1:5500'
-  ],
+  origin: '*', // For development, restrict this in production
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
 app.use(express.json({ limit: '10kb' }));
 app.use(express.urlencoded({ extended: true }));
