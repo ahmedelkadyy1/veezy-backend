@@ -301,6 +301,159 @@ app.delete('/admin/videos/:id', authenticateAdmin, async (req, res) => {
   res.json({ success: true, message: `Video ${id} deleted` });
 });
 
+// Add to your server.js
+app.put('/admin/videos/:id', authenticateAdmin, async (req, res) => {
+  try {
+    const videoId = req.params.id;
+    const updates = req.body;
+
+    // Validate updates
+    const allowedFields = ['title', 'description', 'channelName'];
+    const validUpdates = {};
+    
+    Object.keys(updates).forEach(key => {
+      if (allowedFields.includes(key)) {
+        validUpdates[key] = updates[key];
+      }
+    });
+
+    // Update in database
+    const updatedVideo = await Video.findOneAndUpdate(
+      { videoId },
+      { $set: validUpdates },
+      { new: true, runValidators: true }
+    );
+
+    if (!updatedVideo) {
+      return res.status(404).json({ error: 'Video not found' });
+    }
+
+    // Update in-memory cache
+    if (videos[videoId]) {
+      videos[videoId] = { ...videos[videoId], ...validUpdates };
+    }
+
+    res.json({
+      success: true,
+      video: updatedVideo
+    });
+
+  } catch (error) {
+    console.error('Error updating video:', error);
+    res.status(500).json({ error: 'Failed to update video' });
+  }
+});
+
+// For thumbnail/channel icon updates
+app.put('/admin/videos/:id', authenticateAdmin, async (req, res) => {
+  try {
+    const videoId = req.params.id;
+    const updates = req.body;
+
+    // Validate updates
+    const allowedFields = ['title', 'description', 'channelName'];
+    const validUpdates = {};
+    
+    Object.keys(updates).forEach(key => {
+      if (allowedFields.includes(key)) {
+        validUpdates[key] = updates[key];
+      }
+    });
+
+    // Update in database
+    const updatedVideo = await Video.findOneAndUpdate(
+      { videoId },
+      { $set: validUpdates },
+      { new: true, runValidators: true }
+    );
+
+    if (!updatedVideo) {
+      return res.status(404).json({ error: 'Video not found' });
+    }
+
+    // Update in-memory cache
+    if (videos[videoId]) {
+      videos[videoId] = { ...videos[videoId], ...validUpdates };
+    }
+
+    res.json({
+      success: true,
+      video: updatedVideo
+    });
+
+  } catch (error) {
+    console.error('Error updating video:', error);
+    res.status(500).json({ error: 'Failed to update video' });
+  }
+});
+
+// Edit video media (thumbnail and channel icon)
+app.put('/admin/videos/:id/media', authenticateAdmin, upload.fields([
+  { name: 'thumbnail', maxCount: 1 },
+  { name: 'channelIcon', maxCount: 1 }
+]), async (req, res) => {
+  try {
+    const videoId = req.params.id;
+    const updates = {};
+    const oldVideo = await Video.findOne({ videoId });
+
+    if (!oldVideo) {
+      return res.status(404).json({ error: 'Video not found' });
+    }
+
+    // Handle thumbnail update
+    if (req.files && req.files['thumbnail']) {
+      updates.thumbnail = req.files['thumbnail'][0].filename;
+      // Delete old thumbnail if exists
+      if (oldVideo.thumbnail) {
+        const oldThumbnailPath = path.join(__dirname, 'uploads', 'thumbnails', oldVideo.thumbnail);
+        fs.unlink(oldThumbnailPath, (err) => {
+          if (err) console.error('Error deleting old thumbnail:', err);
+        });
+      }
+    }
+
+    // Handle channel icon update
+    if (req.files && req.files['channelIcon']) {
+      updates.channelIcon = req.files['channelIcon'][0].filename;
+      // Delete old channel icon if exists
+      if (oldVideo.channelIcon) {
+        const oldIconPath = path.join(__dirname, 'uploads', 'icons', oldVideo.channelIcon);
+        fs.unlink(oldIconPath, (err) => {
+          if (err) console.error('Error deleting old channel icon:', err);
+        });
+      }
+    }
+
+    // Only update if there are changes
+    if (Object.keys(updates).length > 0) {
+      const updatedVideo = await Video.findOneAndUpdate(
+        { videoId },
+        { $set: updates },
+        { new: true }
+      );
+
+      // Update in-memory cache
+      if (videos[videoId]) {
+        videos[videoId] = { ...videos[videoId], ...updates };
+      }
+
+      return res.json({
+        success: true,
+        video: updatedVideo
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'No media files were updated'
+    });
+
+  } catch (error) {
+    console.error('Error updating media:', error);
+    res.status(500).json({ error: 'Failed to update media' });
+  }
+});
 // ========== Static Files ==========
 app.use('/uploads', express.static)(path.join(__dirname, 'uploads'), {
   setHeaders: (res, path) => {
