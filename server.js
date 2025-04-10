@@ -27,15 +27,16 @@ mongoose.connect(process.env.MONGODB_URI)
 app.use(helmet());
 app.use(cors({
   origin: [
-      'https://veezy-frontend.vercel.app',
-      'http://localhost:3000',
-      'http://127.0.0.1:5500' // Add this if testing locally
+    'https://veezy-frontend.vercel.app',
+    'http://localhost:3000',
+    'http://127.0.0.1:5500'
   ],
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
 }));
-app.use(bodyParser.json({ limit: '10kb' }));
+app.use(express.json({ limit: '10kb' }));
+app.use(express.urlencoded({ extended: true }));
 
 // Rate Limiting
 const apiLimiter = rateLimit({
@@ -65,7 +66,7 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage: storage,
-  limits: { fileSize: 1000 * 1024 * 1024 }, 
+  limits: { fileSize: 1000 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     if (file.fieldname === 'video') {
       if (!file.originalname.match(/\.(mp4|webm|mov)$/)) {
@@ -160,10 +161,6 @@ app.post('/admin/upload', authenticateAdmin, upload.fields([
   { name: 'thumbnail', maxCount: 1 },
   { name: 'channelIcon', maxCount: 1 }
 ]), async (req, res) => {
-  console.log('Upload request received'); // Debug log
-  console.log('Files received:', req.files); // Debug log
-  console.log('Body received:', req.body); // Debug log
-
   try {
     if (!req.files) throw new Error('No files uploaded');
     if (!req.files['video']) throw new Error('No video file uploaded');
@@ -182,8 +179,6 @@ app.post('/admin/upload', authenticateAdmin, upload.fields([
       views: 0,
       uploadTime: new Date()
     });
-
-    console.log('New video to save:', newVideo); // Debug log
 
     await newVideo.save();
 
@@ -206,7 +201,6 @@ app.post('/admin/upload', authenticateAdmin, upload.fields([
 
   } catch (err) {
     console.error('Upload error:', err);
-    // Clean up uploaded files if error occurs
     if (req.files) {
       Object.values(req.files).forEach(files => {
         files.forEach(file => {
@@ -301,13 +295,12 @@ app.delete('/admin/videos/:id', authenticateAdmin, async (req, res) => {
   res.json({ success: true, message: `Video ${id} deleted` });
 });
 
-// Add to your server.js
+// Update video metadata
 app.put('/admin/videos/:id', authenticateAdmin, async (req, res) => {
   try {
     const videoId = req.params.id;
     const updates = req.body;
 
-    // Validate updates
     const allowedFields = ['title', 'description', 'channelName'];
     const validUpdates = {};
     
@@ -317,7 +310,6 @@ app.put('/admin/videos/:id', authenticateAdmin, async (req, res) => {
       }
     });
 
-    // Update in database
     const updatedVideo = await Video.findOneAndUpdate(
       { videoId },
       { $set: validUpdates },
@@ -328,7 +320,6 @@ app.put('/admin/videos/:id', authenticateAdmin, async (req, res) => {
       return res.status(404).json({ error: 'Video not found' });
     }
 
-    // Update in-memory cache
     if (videos[videoId]) {
       videos[videoId] = { ...videos[videoId], ...validUpdates };
     }
@@ -344,50 +335,7 @@ app.put('/admin/videos/:id', authenticateAdmin, async (req, res) => {
   }
 });
 
-// For thumbnail/channel icon updates
-app.put('/admin/videos/:id', authenticateAdmin, async (req, res) => {
-  try {
-    const videoId = req.params.id;
-    const updates = req.body;
-
-    // Validate updates
-    const allowedFields = ['title', 'description', 'channelName'];
-    const validUpdates = {};
-    
-    Object.keys(updates).forEach(key => {
-      if (allowedFields.includes(key)) {
-        validUpdates[key] = updates[key];
-      }
-    });
-
-    // Update in database
-    const updatedVideo = await Video.findOneAndUpdate(
-      { videoId },
-      { $set: validUpdates },
-      { new: true, runValidators: true }
-    );
-
-    if (!updatedVideo) {
-      return res.status(404).json({ error: 'Video not found' });
-    }
-
-    // Update in-memory cache
-    if (videos[videoId]) {
-      videos[videoId] = { ...videos[videoId], ...validUpdates };
-    }
-
-    res.json({
-      success: true,
-      video: updatedVideo
-    });
-
-  } catch (error) {
-    console.error('Error updating video:', error);
-    res.status(500).json({ error: 'Failed to update video' });
-  }
-});
-
-// Edit video media (thumbnail and channel icon)
+// Update video media
 app.put('/admin/videos/:id/media', authenticateAdmin, upload.fields([
   { name: 'thumbnail', maxCount: 1 },
   { name: 'channelIcon', maxCount: 1 }
@@ -401,10 +349,8 @@ app.put('/admin/videos/:id/media', authenticateAdmin, upload.fields([
       return res.status(404).json({ error: 'Video not found' });
     }
 
-    // Handle thumbnail update
     if (req.files && req.files['thumbnail']) {
       updates.thumbnail = req.files['thumbnail'][0].filename;
-      // Delete old thumbnail if exists
       if (oldVideo.thumbnail) {
         const oldThumbnailPath = path.join(__dirname, 'uploads', 'thumbnails', oldVideo.thumbnail);
         fs.unlink(oldThumbnailPath, (err) => {
@@ -413,10 +359,8 @@ app.put('/admin/videos/:id/media', authenticateAdmin, upload.fields([
       }
     }
 
-    // Handle channel icon update
     if (req.files && req.files['channelIcon']) {
       updates.channelIcon = req.files['channelIcon'][0].filename;
-      // Delete old channel icon if exists
       if (oldVideo.channelIcon) {
         const oldIconPath = path.join(__dirname, 'uploads', 'icons', oldVideo.channelIcon);
         fs.unlink(oldIconPath, (err) => {
@@ -425,7 +369,6 @@ app.put('/admin/videos/:id/media', authenticateAdmin, upload.fields([
       }
     }
 
-    // Only update if there are changes
     if (Object.keys(updates).length > 0) {
       const updatedVideo = await Video.findOneAndUpdate(
         { videoId },
@@ -433,7 +376,6 @@ app.put('/admin/videos/:id/media', authenticateAdmin, upload.fields([
         { new: true }
       );
 
-      // Update in-memory cache
       if (videos[videoId]) {
         videos[videoId] = { ...videos[videoId], ...updates };
       }
@@ -454,30 +396,31 @@ app.put('/admin/videos/:id/media', authenticateAdmin, upload.fields([
     res.status(500).json({ error: 'Failed to update media' });
   }
 });
-// ========== Static Files ==========
+
+// Static Files
 app.use('/uploads', express.static)(path.join(__dirname, 'uploads'), {
-  setHeaders: (res, path) => {
+  setHeaders: (res) => {
     res.set('Cross-Origin-Resource-Policy', 'cross-origin');
   }
 });
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ========== Error Handling ==========
+// Error Handling
 app.use((err, req, res, next) => {
   if (err instanceof multer.MulterError) {
     return res.status(400).json({ error: 'File upload error: ' + err.message });
   }
-  next(err);
+  console.error(err.stack);
+  res.status(500).json({ error: 'Internal server error' });
 });
 
 app.use((req, res) => {
   res.status(404).json({ error: 'Endpoint not found' });
 });
 
-// ========== Data Loading ==========
+// Data Loading
 async function loadData() {
   try {
-    // Load videos from MongoDB
     const dbVideos = await Video.find();
     videos = dbVideos.reduce((acc, video) => {
       acc[video.videoId] = {
@@ -493,7 +436,6 @@ async function loadData() {
       return acc;
     }, {});
 
-    // Load viewed IPs from MongoDB
     const dbViewedIPs = await ViewedIP.find();
     viewedIPs = dbViewedIPs.reduce((acc, entry) => {
       if (!acc[entry.videoId]) acc[entry.videoId] = new Set();
@@ -508,7 +450,7 @@ async function loadData() {
   }
 }
 
-// ========== Initialization ==========
+// Server Initialization
 const PORT = process.env.PORT || 3001;
 
 loadData()
@@ -523,6 +465,7 @@ loadData()
   })
   .catch(err => {
     console.error('Failed to load initial data:', err);
+    process.exit(1);
   });
 
 // Graceful Shutdown
