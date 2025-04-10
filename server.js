@@ -1,6 +1,5 @@
 require('dotenv').config();
 const express = require('express');
-const bodyParser = require('body-parser');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
@@ -16,22 +15,25 @@ const ViewedIP = require('./models/ViewedIP');
 const app = express();
 
 // MongoDB Connection
-mongoose.connect(process.env.MONGODB_URI)
-  .then(() => console.log('Connected to MongoDB'))
-  .catch(err => {
-    console.error('MongoDB connection error:', err);
-    process.exit(1);
-  });
+mongoose.connect(process.env.MONGODB_URI, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+  serverSelectionTimeoutMS: 5000
+})
+.then(() => console.log('Connected to MongoDB'))
+.catch(err => {
+  console.error('MongoDB connection error:', err);
+  process.exit(1);
+});
 
 // Middleware
 app.use(helmet());
-const cors = require('cors');
 app.use(cors({
-  origin: '*', // For development, restrict this in production
+  origin: process.env.FRONTEND_URL || '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
-app.use(express.json({ limit: '10kb' }));
+app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // Rate Limiting
@@ -62,106 +64,77 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage: storage,
-  limits: { fileSize: 1000 * 1024 * 1024 },
+  limits: { fileSize: 1000 * 1024 * 1024 }, // 1000MB
   fileFilter: (req, file, cb) => {
     if (file.fieldname === 'video') {
       if (!file.originalname.match(/\.(mp4|webm|mov)$/)) {
-        return cb(new Error('Only video files are allowed!'));
+        return cb(new Error('Only video files are allowed!'), false);
       }
     } else if (file.fieldname === 'thumbnail' || file.fieldname === 'channelIcon') {
       if (!file.originalname.match(/\.(jpg|jpeg|png|gif)$/)) {
-        return cb(new Error('Only image files are allowed!'));
+        return cb(new Error('Only image files are allowed!'), false);
       }
     }
     cb(null, true);
   }
 });
 
-const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '227001';
+// Admin Authentication
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'default-admin-token';
 const authenticateAdmin = (req, res, next) => {
   const token = req.headers['authorization']?.split(' ')[1];
-  if (token !== ADMIN_TOKEN) return res.status(403).json({ error: 'Invalid admin token' });
+  if (token !== ADMIN_TOKEN) {
+    return res.status(403).json({ error: 'Invalid admin token' });
+  }
   next();
 };
 
-// In-memory cache
-let videos = {};
-let viewedIPs = {};
+// ==================== ROUTES ====================
 
-// ========== Routes ==========
+// Health Check
 app.get('/health', (req, res) => {
-  res.json({
+  res.json({ 
     status: 'healthy',
     timestamp: new Date().toISOString(),
-    videoCount: Object.keys(videos).length
+    dbStatus: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected'
   });
 });
 
-app.get('/videos', (req, res) => {
-  res.set('Cache-Control', 'no-store, max-age=0');
-  res.json(videos);
-});
-
-app.get('/videos/:id', apiLimiter, (req, res) => {
-  const videoId = req.params.id;
-  const video = videos[videoId];
-  if (!video) return res.status(404).json({ error: 'Video not found' });
-  res.set('Cache-Control', 'no-store, max-age=0');
-  res.json({ ...video, loading: video.loading || false });
-});
-
-app.post('/videos/:id/view', apiLimiter, async (req, res) => {
-  const videoId = req.params.id;
-  const clientIP = req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
-
-  if (!videos[videoId]) {
-    videos[videoId] = {
-      views: 0,
-      uploadTime: new Date().toISOString(),
-      title: `Video ${videoId}`,
-      loading: true
-    };
-  }
-
-  if (!viewedIPs[videoId]) viewedIPs[videoId] = new Set();
-
-  videos[videoId].loading = true;
-
+// Get all videos (Admin-only)
+app.get('/videos', authenticateAdmin, async (req, res) => {
   try {
-    if (!viewedIPs[videoId].has(clientIP)) {
-      videos[videoId].views++;
-      viewedIPs[videoId].add(clientIP);
-
-      await Video.updateOne({ videoId }, { $inc: { views: 1 } });
-      await ViewedIP.create({ videoId, ip: clientIP });
-    }
-
-    res.json({
-      views: videos[videoId].views,
-      loading: false,
-      alreadyViewed: viewedIPs[videoId].has(clientIP)
+    const videos = await Video.find({}).lean();
+    const formattedVideos = {};
+    
+    videos.forEach(video => {
+      formattedVideos[video.videoId] = {
+        title: video.title,
+        description: video.description,
+        channelName: video.channelName,
+        views: video.views,
+        uploadTime: video.uploadTime.toISOString(),
+        thumbnail: video.thumbnail,
+        channelIcon: video.channelIcon
+      };
     });
+
+    res.json(formattedVideos);
   } catch (error) {
-    console.error('Error incrementing views:', error);
-    res.status(500).json({ error: 'Failed to increment views', loading: false });
-  } finally {
-    videos[videoId].loading = false;
+    console.error('Error fetching videos:', error);
+    res.status(500).json({ error: 'Failed to fetch videos' });
   }
 });
 
-// ========== Admin Routes ==========
-app.get('/admin/videos', authenticateAdmin, (req, res) => res.json(videos));
-
+// Video Upload (Admin-only)
 app.post('/admin/upload', authenticateAdmin, upload.fields([
   { name: 'video', maxCount: 1 },
   { name: 'thumbnail', maxCount: 1 },
   { name: 'channelIcon', maxCount: 1 }
 ]), async (req, res) => {
   try {
-    if (!req.files) throw new Error('No files uploaded');
-    if (!req.files['video']) throw new Error('No video file uploaded');
-    if (!req.files['thumbnail']) throw new Error('No thumbnail uploaded');
-    if (!req.files['channelIcon']) throw new Error('No channel icon uploaded');
+    if (!req.files?.video?.[0]) throw new Error('Video file is required');
+    if (!req.files?.thumbnail?.[0]) throw new Error('Thumbnail is required');
+    if (!req.files?.channelIcon?.[0]) throw new Error('Channel icon is required');
 
     const videoId = Date.now().toString();
     const newVideo = new Video({
@@ -169,34 +142,26 @@ app.post('/admin/upload', authenticateAdmin, upload.fields([
       title: req.body.title,
       description: req.body.description,
       channelName: req.body.channelName,
-      channelIcon: req.files['channelIcon'][0].filename,
-      filename: req.files['video'][0].filename,
-      thumbnail: req.files['thumbnail'][0].filename,
+      channelIcon: req.files.channelIcon[0].filename,
+      filename: req.files.video[0].filename,
+      thumbnail: req.files.thumbnail[0].filename,
       views: 0,
       uploadTime: new Date()
     });
 
     await newVideo.save();
 
-    // Update in-memory cache
-    videos[videoId] = {
-      title: req.body.title,
-      description: req.body.description,
-      channelName: req.body.channelName,
-      channelIcon: req.files['channelIcon'][0].filename,
-      thumbnail: req.files['thumbnail'][0].filename,
-      views: 0,
-      uploadTime: new Date().toISOString(),
-      loading: false
-    };
-
-    res.json({ 
-      success: true, 
-      video: newVideo 
+    res.status(201).json({
+      success: true,
+      video: {
+        videoId,
+        ...newVideo.toObject()
+      }
     });
-
-  } catch (err) {
-    console.error('Upload error:', err);
+  } catch (error) {
+    console.error('Upload error:', error);
+    
+    // Clean up uploaded files if error occurs
     if (req.files) {
       Object.values(req.files).forEach(files => {
         files.forEach(file => {
@@ -204,201 +169,114 @@ app.post('/admin/upload', authenticateAdmin, upload.fields([
         });
       });
     }
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post('/admin/videos/:id/set-upload-time', authenticateAdmin, async (req, res) => {
-  const { id } = req.params;
-  const { newTime } = req.body;
-
-  if (!newTime || isNaN(new Date(newTime).getTime()))
-    return res.status(400).json({ error: 'Invalid timestamp format' });
-
-  if (new Date(newTime) > new Date())
-    return res.status(400).json({ error: 'Upload time cannot be in the future' });
-
-  if (!videos[id]) videos[id] = { views: 0, title: `Video ${id}`, loading: false };
-
-  videos[id].uploadTime = newTime;
-  await Video.updateOne({ videoId: id }, { uploadTime: new Date(newTime) }, { upsert: true });
-  res.json({ success: true, video: videos[id] });
-});
-
-app.post('/admin/videos/bulk-update-times', authenticateAdmin, async (req, res) => {
-  const updates = req.body.updates;
-  const now = new Date();
-  const results = [], errors = [];
-
-  if (!Array.isArray(updates)) {
-    return res.status(400).json({ error: 'Expected array of updates' });
-  }
-
-  for (const { id, newTime } of updates) {
-    if (!id || !newTime || isNaN(new Date(newTime).getTime())) {
-      errors.push(`Invalid update for ID: ${id}`);
-      continue;
-    }
-
-    if (new Date(newTime) > now) {
-      errors.push(`Future date not allowed for ID: ${id}`);
-      continue;
-    }
-
-    if (!videos[id]) videos[id] = { views: 0, title: `Video ${id}`, loading: false };
-    videos[id].uploadTime = newTime;
-    await Video.updateOne({ videoId: id }, { uploadTime: new Date(newTime) }, { upsert: true });
-    results.push({ id, status: 'updated', newTime });
-  }
-
-  res.json({
-    success: errors.length === 0,
-    updatedCount: results.length,
-    errorCount: errors.length,
-    results,
-    errors: errors.length > 0 ? errors : undefined
-  });
-});
-
-app.post('/admin/videos/:id/set-views', authenticateAdmin, async (req, res) => {
-  const { id } = req.params;
-  const { views: newViews } = req.body;
-
-  if (newViews === undefined || isNaN(parseInt(newViews)))
-    return res.status(400).json({ error: 'Invalid view count' });
-
-  if (!videos[id]) {
-    videos[id] = { uploadTime: new Date().toISOString(), title: `Video ${id}`, loading: false };
-  }
-
-  videos[id].views = parseInt(newViews);
-  await Video.updateOne({ videoId: id }, { views: parseInt(newViews) }, { upsert: true });
-
-  res.json({ success: true, video: videos[id] });
-});
-
-app.delete('/admin/videos/:id', authenticateAdmin, async (req, res) => {
-  const { id } = req.params;
-
-  if (!videos[id]) return res.status(404).json({ error: 'Video not found' });
-
-  delete videos[id];
-  delete viewedIPs[id];
-
-  await Video.deleteOne({ videoId: id });
-  await ViewedIP.deleteMany({ videoId: id });
-
-  res.json({ success: true, message: `Video ${id} deleted` });
-});
-
-// Update video metadata
-app.put('/admin/videos/:id', authenticateAdmin, async (req, res) => {
-  try {
-    const videoId = req.params.id;
-    const updates = req.body;
-
-    const allowedFields = ['title', 'description', 'channelName'];
-    const validUpdates = {};
     
-    Object.keys(updates).forEach(key => {
-      if (allowedFields.includes(key)) {
-        validUpdates[key] = updates[key];
-      }
+    res.status(500).json({ 
+      error: error.message || 'Upload failed' 
     });
-
-    const updatedVideo = await Video.findOneAndUpdate(
-      { videoId },
-      { $set: validUpdates },
-      { new: true, runValidators: true }
-    );
-
-    if (!updatedVideo) {
-      return res.status(404).json({ error: 'Video not found' });
-    }
-
-    if (videos[videoId]) {
-      videos[videoId] = { ...videos[videoId], ...validUpdates };
-    }
-
-    res.json({
-      success: true,
-      video: updatedVideo
-    });
-
-  } catch (error) {
-    console.error('Error updating video:', error);
-    res.status(500).json({ error: 'Failed to update video' });
   }
 });
 
-// Update video media
-app.put('/admin/videos/:id/media', authenticateAdmin, upload.fields([
-  { name: 'thumbnail', maxCount: 1 },
-  { name: 'channelIcon', maxCount: 1 }
-]), async (req, res) => {
-  try {
-    const videoId = req.params.id;
-    const updates = {};
-    const oldVideo = await Video.findOne({ videoId });
+// Video Management Endpoints
+app.route('/admin/videos/:id')
+  .put(authenticateAdmin, async (req, res) => {
+    try {
+      const videoId = req.params.id;
+      const updates = req.body;
 
-    if (!oldVideo) {
-      return res.status(404).json({ error: 'Video not found' });
-    }
+      const allowedUpdates = ['title', 'description', 'channelName'];
+      const filteredUpdates = Object.keys(updates)
+        .filter(key => allowedUpdates.includes(key))
+        .reduce((obj, key) => {
+          obj[key] = updates[key];
+          return obj;
+        }, {});
 
-    if (req.files && req.files['thumbnail']) {
-      updates.thumbnail = req.files['thumbnail'][0].filename;
-      if (oldVideo.thumbnail) {
-        const oldThumbnailPath = path.join(__dirname, 'uploads', 'thumbnails', oldVideo.thumbnail);
-        fs.unlink(oldThumbnailPath, (err) => {
-          if (err) console.error('Error deleting old thumbnail:', err);
-        });
-      }
-    }
-
-    if (req.files && req.files['channelIcon']) {
-      updates.channelIcon = req.files['channelIcon'][0].filename;
-      if (oldVideo.channelIcon) {
-        const oldIconPath = path.join(__dirname, 'uploads', 'icons', oldVideo.channelIcon);
-        fs.unlink(oldIconPath, (err) => {
-          if (err) console.error('Error deleting old channel icon:', err);
-        });
-      }
-    }
-
-    if (Object.keys(updates).length > 0) {
       const updatedVideo = await Video.findOneAndUpdate(
         { videoId },
-        { $set: updates },
-        { new: true }
+        { $set: filteredUpdates },
+        { new: true, runValidators: true }
       );
 
-      if (videos[videoId]) {
-        videos[videoId] = { ...videos[videoId], ...updates };
+      if (!updatedVideo) {
+        return res.status(404).json({ error: 'Video not found' });
       }
 
-      return res.json({
+      res.json({
         success: true,
         video: updatedVideo
       });
+    } catch (error) {
+      console.error('Update error:', error);
+      res.status(500).json({ error: 'Failed to update video' });
+    }
+  })
+  .delete(authenticateAdmin, async (req, res) => {
+    try {
+      const videoId = req.params.id;
+      const video = await Video.findOneAndDelete({ videoId });
+
+      if (!video) {
+        return res.status(404).json({ error: 'Video not found' });
+      }
+
+      // Delete associated files
+      const filesToDelete = [
+        path.join(__dirname, 'uploads', 'videos', video.filename),
+        path.join(__dirname, 'uploads', 'thumbnails', video.thumbnail),
+        path.join(__dirname, 'uploads', 'icons', video.channelIcon)
+      ];
+
+      filesToDelete.forEach(filePath => {
+        fs.unlink(filePath, err => {
+          if (err) console.error('Error deleting file:', filePath, err);
+        });
+      });
+
+      res.json({
+        success: true,
+        message: `Video ${videoId} deleted`
+      });
+    } catch (error) {
+      console.error('Delete error:', error);
+      res.status(500).json({ error: 'Failed to delete video' });
+    }
+  });
+
+// View Tracking
+app.post('/videos/:id/view', apiLimiter, async (req, res) => {
+  try {
+    const videoId = req.params.id;
+    const clientIP = req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
+
+    // Check if IP already viewed this video
+    const alreadyViewed = await ViewedIP.exists({ videoId, ip: clientIP });
+    if (alreadyViewed) {
+      return res.json({ 
+        alreadyViewed: true,
+        views: (await Video.findOne({ videoId }))?.views || 0
+      });
     }
 
-    res.json({
-      success: true,
-      message: 'No media files were updated'
-    });
+    // Record view
+    await ViewedIP.create({ videoId, ip: clientIP });
+    const updatedVideo = await Video.findOneAndUpdate(
+      { videoId },
+      { $inc: { views: 1 } },
+      { new: true, upsert: true }
+    );
 
+    res.json({
+      views: updatedVideo.views,
+      alreadyViewed: false
+    });
   } catch (error) {
-    console.error('Error updating media:', error);
-    res.status(500).json({ error: 'Failed to update media' });
+    console.error('View tracking error:', error);
+    res.status(500).json({ error: 'Failed to track view' });
   }
 });
 
 // Static Files
-app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
-  setHeaders: (res) => {
-    res.set('Cross-Origin-Resource-Policy', 'cross-origin');
-  }
-}));
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Error Handling
@@ -414,65 +292,20 @@ app.use((req, res) => {
   res.status(404).json({ error: 'Endpoint not found' });
 });
 
-// Data Loading
-async function loadData() {
-  try {
-    const dbVideos = await Video.find();
-    videos = dbVideos.reduce((acc, video) => {
-      acc[video.videoId] = {
-        title: video.title,
-        description: video.description,
-        channelName: video.channelName,
-        channelIcon: video.channelIcon,
-        thumbnail: video.thumbnail,
-        views: video.views,
-        uploadTime: video.uploadTime.toISOString(),
-        loading: false
-      };
-      return acc;
-    }, {});
-
-    const dbViewedIPs = await ViewedIP.find();
-    viewedIPs = dbViewedIPs.reduce((acc, entry) => {
-      if (!acc[entry.videoId]) acc[entry.videoId] = new Set();
-      acc[entry.videoId].add(entry.ip);
-      return acc;
-    }, {});
-
-    console.log('Data loaded from MongoDB');
-  } catch (err) {
-    console.error('Error loading initial data:', err);
-    throw err;
-  }
-}
-
 // Server Initialization
 const PORT = process.env.PORT || 3001;
 
-loadData()
-  .then(() => {
-    app.listen(PORT, () => {
-      console.log(`Server running on port ${PORT}`);
-      console.log(`Admin panel: http://localhost:${PORT}/admin`);
-      if (process.env.NODE_ENV !== 'production') {
-        console.log(`Admin token: ${ADMIN_TOKEN}`);
-      }
-    });
-  })
-  .catch(err => {
-    console.error('Failed to load initial data:', err);
-    process.exit(1);
-  });
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+  console.log(`Admin token: ${ADMIN_TOKEN}`);
+  if (process.env.NODE_ENV !== 'production') {
+    console.log(`API Docs: http://localhost:${PORT}/api-docs`);
+  }
+});
 
 // Graceful Shutdown
 process.on('SIGINT', async () => {
-  console.log('Closing MongoDB connection and shutting down...');
   await mongoose.connection.close();
-  process.exit(0);
-});
-
-process.on('SIGTERM', async () => {
-  console.log('Closing MongoDB connection and shutting down...');
-  await mongoose.connection.close();
+  console.log('MongoDB connection closed');
   process.exit(0);
 });
