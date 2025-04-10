@@ -65,7 +65,7 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage: storage,
-  limits: { fileSize: 500 * 1024 * 1024 }, // 500MB
+  limits: { fileSize: 1000 * 1024 * 1024 }, 
   fileFilter: (req, file, cb) => {
     if (file.fieldname === 'video') {
       if (!file.originalname.match(/\.(mp4|webm|mov)$/)) {
@@ -156,58 +156,67 @@ app.post('/videos/:id/view', apiLimiter, async (req, res) => {
 app.get('/admin/videos', authenticateAdmin, (req, res) => res.json(videos));
 
 app.post('/admin/upload', authenticateAdmin, upload.fields([
-    { name: 'video', maxCount: 1 },
-    { name: 'thumbnail', maxCount: 1 },
-    { name: 'channelIcon', maxCount: 1 }
-  ]), async (req, res) => {
-    try {
-      if (!req.files) throw new Error('No files uploaded');
-  
-      const videoId = Date.now().toString(); // Generate unique ID
-      const newVideo = new Video({
-        videoId, // Add this
-        title: req.body.title,
-        description: req.body.description,
-        channelName: req.body.channelName,
-        channelIcon: req.files['channelIcon'][0].filename,
-        filename: req.files['video'][0].filename,
-        thumbnail: req.files['thumbnail'][0].filename,
-        views: 0, // Initialize views
-        uploadTime: new Date() // Set upload time
-      });
-  
-      await newVideo.save();
-  
-      // Update in-memory cache
-      videos[videoId] = {
-        title: req.body.title,
-        description: req.body.description,
-        channelName: req.body.channelName,
-        channelIcon: req.files['channelIcon'][0].filename,
-        thumbnail: req.files['thumbnail'][0].filename,
-        views: 0,
-        uploadTime: new Date().toISOString(),
-        loading: false
-      };
-  
-      res.json({ 
-        success: true, 
-        video: newVideo 
-      });
-  
-    } catch (err) {
-      console.error('Upload error:', err);
-      // Clean up uploaded files if error occurs
-      if (req.files) {
-        Object.values(req.files).forEach(files => {
-          files.forEach(file => {
-            fs.unlink(file.path, () => {});
-          });
+  { name: 'video', maxCount: 1 },
+  { name: 'thumbnail', maxCount: 1 },
+  { name: 'channelIcon', maxCount: 1 }
+]), async (req, res) => {
+  console.log('Upload request received'); // Debug log
+  console.log('Files received:', req.files); // Debug log
+  console.log('Body received:', req.body); // Debug log
+
+  try {
+    if (!req.files) throw new Error('No files uploaded');
+    if (!req.files['video']) throw new Error('No video file uploaded');
+    if (!req.files['thumbnail']) throw new Error('No thumbnail uploaded');
+    if (!req.files['channelIcon']) throw new Error('No channel icon uploaded');
+
+    const videoId = Date.now().toString();
+    const newVideo = new Video({
+      videoId,
+      title: req.body.title,
+      description: req.body.description,
+      channelName: req.body.channelName,
+      channelIcon: req.files['channelIcon'][0].filename,
+      filename: req.files['video'][0].filename,
+      thumbnail: req.files['thumbnail'][0].filename,
+      views: 0,
+      uploadTime: new Date()
+    });
+
+    console.log('New video to save:', newVideo); // Debug log
+
+    await newVideo.save();
+
+    // Update in-memory cache
+    videos[videoId] = {
+      title: req.body.title,
+      description: req.body.description,
+      channelName: req.body.channelName,
+      channelIcon: req.files['channelIcon'][0].filename,
+      thumbnail: req.files['thumbnail'][0].filename,
+      views: 0,
+      uploadTime: new Date().toISOString(),
+      loading: false
+    };
+
+    res.json({ 
+      success: true, 
+      video: newVideo 
+    });
+
+  } catch (err) {
+    console.error('Upload error:', err);
+    // Clean up uploaded files if error occurs
+    if (req.files) {
+      Object.values(req.files).forEach(files => {
+        files.forEach(file => {
+          fs.unlink(file.path, () => {});
         });
-      }
-      res.status(500).json({ error: err.message });
+      });
     }
-  });
+    res.status(500).json({ error: err.message });
+  }
+});
 
 app.post('/admin/videos/:id/set-upload-time', authenticateAdmin, async (req, res) => {
   const { id } = req.params;
@@ -293,13 +302,19 @@ app.delete('/admin/videos/:id', authenticateAdmin, async (req, res) => {
 });
 
 // ========== Static Files ==========
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use('/uploads', express.static)(path.join(__dirname, 'uploads'), {
+  setHeaders: (res, path) => {
+    res.set('Cross-Origin-Resource-Policy', 'cross-origin');
+  }
+});
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ========== Error Handling ==========
 app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).json({ error: 'Internal server error' });
+  if (err instanceof multer.MulterError) {
+    return res.status(400).json({ error: 'File upload error: ' + err.message });
+  }
+  next(err);
 });
 
 app.use((req, res) => {
