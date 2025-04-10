@@ -26,14 +26,15 @@ mongoose.connect(process.env.MONGODB_URI)
 // Middleware
 app.use(helmet());
 app.use(cors({
-    origin: [
+  origin: [
       'https://veezy-frontend.vercel.app',
-      'http://localhost:3000'
-    ],
-    methods: ['GET', 'POST', 'DELETE'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-    credentials: true // Add this if using cookies/auth
-  }));
+      'http://localhost:3000',
+      'http://127.0.0.1:5500' // Add this if testing locally
+  ],
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
+}));
 app.use(bodyParser.json({ limit: '10kb' }));
 
 // Rate Limiting
