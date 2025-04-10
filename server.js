@@ -89,7 +89,6 @@ const authenticateAdmin = (req, res, next) => {
 // In-memory cache
 let videos = {};
 let viewedIPs = {};
-// In your server.js
 
 // ========== Routes ==========
 app.get('/health', (req, res) => {
@@ -208,6 +207,7 @@ app.post('/admin/upload', authenticateAdmin, upload.fields([
       res.status(500).json({ error: err.message });
     }
   });
+
 app.post('/admin/videos/:id/set-upload-time', authenticateAdmin, async (req, res) => {
   const { id } = req.params;
   const { newTime } = req.body;
@@ -291,13 +291,11 @@ app.delete('/admin/videos/:id', authenticateAdmin, async (req, res) => {
   res.json({ success: true, message: `Video ${id} deleted` });
 });
 
-// [Previous code remains the same until the first error handling section]
-
 // ========== Static Files ==========
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ========== Error Handling ========== (Keep only one copy of this)
+// ========== Error Handling ==========
 app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(500).json({ error: 'Internal server error' });
@@ -334,7 +332,7 @@ async function loadData() {
       return acc;
     }, {});
 
-    console.log('Initial data loaded successfully');
+    console.log('Data loaded from MongoDB');
   } catch (err) {
     console.error('Error loading initial data:', err);
     throw err;
@@ -342,45 +340,21 @@ async function loadData() {
 }
 
 // ========== Initialization ==========
-loadData().catch(err => {
-  console.error('Failed to load initial data:', err);
-});
-
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`Admin panel: http://localhost:${PORT}/admin`);
-  if (process.env.NODE_ENV !== 'production') {
-    console.log(`Admin token: ${ADMIN_TOKEN}`);
-  }
-});
 
-// Graceful Shutdown
-process.on('SIGINT', async () => {
-  console.log('Closing MongoDB connection and shutting down...');
-  await mongoose.connection.close();
-  process.exit(0);
-});
-
-process.on('SIGTERM', async () => {
-  console.log('Closing MongoDB connection and shutting down...');
-  await mongoose.connection.close();
-  process.exit(0);
-});
-
-// ========== Initialization ==========
-loadData().catch(err => {
-  console.error('Failed to load initial data:', err);
-});
-
-const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`Admin panel: http://localhost:${PORT}/admin`);
-  if (process.env.NODE_ENV !== 'production') {
-    console.log(`Admin token: ${ADMIN_TOKEN}`);
-  }
-});
+loadData()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+      console.log(`Admin panel: http://localhost:${PORT}/admin`);
+      if (process.env.NODE_ENV !== 'production') {
+        console.log(`Admin token: ${ADMIN_TOKEN}`);
+      }
+    });
+  })
+  .catch(err => {
+    console.error('Failed to load initial data:', err);
+  });
 
 // Graceful Shutdown
 process.on('SIGINT', async () => {
