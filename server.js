@@ -291,11 +291,13 @@ app.delete('/admin/videos/:id', authenticateAdmin, async (req, res) => {
   res.json({ success: true, message: `Video ${id} deleted` });
 });
 
+// [Previous code remains the same until the first error handling section]
+
 // ========== Static Files ==========
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ========== Error Handling ==========
+// ========== Error Handling ========== (Keep only one copy of this)
 app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(500).json({ error: 'Internal server error' });
@@ -303,6 +305,67 @@ app.use((err, req, res, next) => {
 
 app.use((req, res) => {
   res.status(404).json({ error: 'Endpoint not found' });
+});
+
+// ========== Data Loading ==========
+async function loadData() {
+  try {
+    // Load videos from MongoDB
+    const dbVideos = await Video.find();
+    videos = dbVideos.reduce((acc, video) => {
+      acc[video.videoId] = {
+        title: video.title,
+        description: video.description,
+        channelName: video.channelName,
+        channelIcon: video.channelIcon,
+        thumbnail: video.thumbnail,
+        views: video.views,
+        uploadTime: video.uploadTime.toISOString(),
+        loading: false
+      };
+      return acc;
+    }, {});
+
+    // Load viewed IPs from MongoDB
+    const dbViewedIPs = await ViewedIP.find();
+    viewedIPs = dbViewedIPs.reduce((acc, entry) => {
+      if (!acc[entry.videoId]) acc[entry.videoId] = new Set();
+      acc[entry.videoId].add(entry.ip);
+      return acc;
+    }, {});
+
+    console.log('Initial data loaded successfully');
+  } catch (err) {
+    console.error('Error loading initial data:', err);
+    throw err;
+  }
+}
+
+// ========== Initialization ==========
+loadData().catch(err => {
+  console.error('Failed to load initial data:', err);
+});
+
+const PORT = process.env.PORT || 3001;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+  console.log(`Admin panel: http://localhost:${PORT}/admin`);
+  if (process.env.NODE_ENV !== 'production') {
+    console.log(`Admin token: ${ADMIN_TOKEN}`);
+  }
+});
+
+// Graceful Shutdown
+process.on('SIGINT', async () => {
+  console.log('Closing MongoDB connection and shutting down...');
+  await mongoose.connection.close();
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  console.log('Closing MongoDB connection and shutting down...');
+  await mongoose.connection.close();
+  process.exit(0);
 });
 
 // ========== Initialization ==========
