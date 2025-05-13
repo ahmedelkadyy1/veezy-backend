@@ -79,7 +79,10 @@ const authenticateAdmin = (req, res, next) => {
     
     next();
 };
-
+// Public endpoint: Get all videos (for index.html)
+app.get('/videos', (req, res) => {
+  res.json(videos); // Sends the entire videos object
+});
 // Health check endpoint
 app.get('/health', (req, res) => {
     res.status(200).json({
