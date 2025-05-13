@@ -42,10 +42,23 @@ function loadData() {
             viewedIPs = data.viewedIPs || {};
         } else {
             // Initialize with sample data if no file exists
-            videos = {
-                1: { views: 142, uploadTime: '2023-05-15T10:00:00Z' },
-                2: { views: 87, uploadTime: '2023-06-20T14:30:00Z' }
-            };
+            // In your loadData() function, update the sample data:
+videos = {
+  1: { 
+    views: 142, 
+    uploadTime: '2023-05-15T10:00:00Z',
+    title: 'Sample Video 1',
+    channelName: 'Veezy Channel',
+    thumbnail: 'imgs/thumbnail1.jpg'
+  },
+  2: { 
+    views: 87, 
+    uploadTime: '2023-06-20T14:30:00Z',
+    title: 'Sample Video 2',
+    channelName: 'Veezy Channel',
+    thumbnail: 'imgs/thumbnail2.jpg'
+  }
+};
             saveData();
         }
     } catch (err) {
