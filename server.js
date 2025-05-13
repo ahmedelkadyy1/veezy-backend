@@ -49,14 +49,14 @@ videos = {
     uploadTime: '2023-05-15T10:00:00Z',
     title: 'Sample Video 1',
     channelName: 'Veezy Channel',
-    thumbnail: 'imgs/thumbnail1.jpg'
+    thumbnail: 'imgs/blanx-thumbinal.png'
   },
   2: { 
     views: 87, 
     uploadTime: '2023-06-20T14:30:00Z',
     title: 'Sample Video 2',
     channelName: 'Veezy Channel',
-    thumbnail: 'imgs/thumbnail2.jpg'
+    thumbnail: 'imgs/watchnest-thumbinal.png'
   }
 };
             saveData();
